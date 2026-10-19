@@ -1,0 +1,193 @@
+# ibc-search default configuration
+#
+# Every parameter carries: a unit, a provenance note, and a status marker.
+#
+# status markers
+#   documented = traceable to a named external reference or to the installed
+#                FoldDisco build, and recorded in docs/ASSUMPTIONS.md
+#   verified   = empirically checked on this machine against the installed
+#                FoldDisco build or an established library, with the check
+#                recorded in docs/ASSUMPTIONS.md
+#   proposed   = an engineering choice made by this implementation. NOT derived
+#                from literature. Intended to be revisited by a sensitivity
+#                study. Must not be cited as an established criterion.
+#   blocked    = cannot be fixed until an external input/decision arrives
+#
+# IMPORTANT: four parameters of similar magnitude are kept deliberately
+# separate and must never be merged:
+#   1. exposure.probe_radius_angstrom       (SASA solvent probe)
+#   2. connectivity.contact_cutoff_angstrom (patch-internal residue adjacency)
+#   3. ball_search.radii_angstrom           (patch extraction ball radius)
+#   4. folddisco.distance_threshold / angle_threshold (search tolerances)
+# A fifth quantity -- the ~5 A antibody-antigen contact cutoff from the project
+# notes -- is NOT represented here, because no antibody-antigen contact is
+# computed in this component. It is out of scope and must not be aliased onto
+# connectivity.contact_cutoff_angstrom.
+
+[run]
+# Output directory for tables and the run manifest.
+output_dir = "results"          # unit: path       | provenance: this impl | status: proposed
+# Table format for residue/patch tables: "tsv" or "parquet".
+table_format = "tsv"            # unit: enum       | provenance: this impl | status: proposed
+# RNG seed. Recorded in the manifest. The algorithm is deterministic and does
+# not currently consume randomness; the seed exists so later stochastic stages
+# inherit a recorded seed.
+random_seed = 0                 # unit: int        | provenance: this impl | status: proposed
+log_level = "INFO"              # unit: enum       | provenance: this impl | status: proposed
+
+
+[input]
+# Model to scan when the file contains several. 1-based, matching the
+# deposited model numbering. Recorded in the manifest.
+model = 1                       # unit: index      | provenance: this impl | status: proposed
+# Chains to scan. Empty list = all polymer chains found. Author chain IDs.
+chains = []                     # unit: chain IDs  | provenance: this impl | status: proposed
+# Alternate-conformer resolution rule. "highest_occupancy" selects, per
+# residue, the altloc with the greatest summed occupancy; ties are broken by
+# the lexicographically smallest altloc ID. Fully deterministic.
+altloc_policy = "highest_occupancy"  # unit: enum  | provenance: this impl | status: documented
+# Directory for RCSB downloads. Fetches record URL, UTC date and SHA-256.
+cache_dir = "cache/rcsb"        # unit: path       | provenance: this impl | status: proposed
+# Fetched-entry format preference. mmCIF preferred: it carries both
+# label_asym_id and auth_asym_id and has no 4-character chain/80-column limits.
+fetch_format = "mmcif"          # unit: enum       | provenance: this impl | status: documented
+fetch_timeout_seconds = 30      # unit: s          | provenance: this impl | status: proposed
+
+
+[exposure]
+# Solvent probe radius for Shrake-Rupley SASA. 1.4 A is the conventional
+# water probe (Shrake & Rupley 1973; Lee & Richards 1971). This is parameter
+# (1) of the four kept-separate radii.
+probe_radius_angstrom = 1.4     # unit: A          | provenance: Shrake & Rupley 1973 | status: documented
+# Number of sphere sample points per atom (Shrake-Rupley quadrature).
+# Higher = smoother SASA, linearly more cost.
+sphere_points = 1000            # unit: count      | provenance: biotite default | status: documented
+# Van der Waals radius set used by the SASA implementation.
+vdw_radii = "ProtOr"            # unit: enum       | provenance: Tsai et al. 1999 (ProtOr) | status: documented
+# Reference maxima for relative solvent accessibility (RSA = SASA / max).
+# "tien2013_theoretical" = Tien et al. 2013, PLoS ONE 8(11):e80635,
+# theoretical per-residue maxima. Residues absent from the table get a
+# MISSING RSA with a stated reason -- never 0.0.
+rsa_reference = "tien2013_theoretical"  # unit: enum | provenance: Tien et al. 2013 | status: documented
+# Structural context in which SASA is computed. "scanned_chains" computes
+# SASA using only the chains being scanned; "all_polymer_chains" uses every
+# polymer chain in the model, so inter-chain interfaces read as buried.
+# This choice materially changes which residues are exposed.
+context = "scanned_chains"      # unit: enum       | provenance: this impl | status: proposed
+# Include heteroatom (ligand/glycan) atoms as occluders in the SASA context.
+# Default false: a designed binder's surface is assessed free of crystal
+# additives. Recorded either way.
+include_hetero_as_occluder = false  # unit: bool   | provenance: this impl | status: proposed
+
+
+[ball_search]
+# Ball radii to scan, in Angstroms. This is parameter (3) of the four
+# kept-separate radii. These are ENGINEERING CANDIDATES for a later
+# sensitivity study, not literature-derived optima. Project notes suggest a
+# 5 A ball captures a submotif rather than a whole epitope.
+radii_angstrom = [5.0, 6.5, 8.0, 10.0]  # unit: A | provenance: this impl | status: proposed
+# Human-readable scale label per radius, carried into outputs. Purely
+# descriptive bookkeeping; it asserts nothing about epitope size.
+scale_labels = { "5.0" = "submotif", "6.5" = "submotif", "8.0" = "submotif", "10.0" = "intermediate" }
+# Ball-center representation: "cb" (C-beta atom) or
+# "sidechain_centroid" (centroid of side-chain heavy atoms).
+center_mode = "cb"              # unit: enum       | provenance: this impl | status: proposed
+# RSA at/above which a residue may act as a scanning SEED.
+# THIS IS AN IMPLEMENTATION CHOICE, NOT AN ESTABLISHED EPITOPE CRITERION.
+# 0.20 is a commonly used exposed/buried split but carries no epitope meaning.
+seed_rsa_threshold = 0.20       # unit: fraction   | provenance: this impl | status: proposed
+# RSA at/above which a neighbour residue may be a patch MEMBER. Lower than the
+# seed threshold so that partially occluded rim residues are retained.
+member_rsa_threshold = 0.05     # unit: fraction   | provenance: this impl | status: proposed
+# What to do with neighbours below member_rsa_threshold: "drop" or "flag".
+# "flag" keeps them as members carrying buried_member = true.
+buried_member_policy = "drop"   # unit: enum       | provenance: this impl | status: proposed
+# Minimum residues in an emitted patch. Hard floor is 2: a 1-residue query
+# returns zero rows from the installed FoldDisco build (verified -- FoldDisco
+# hashes residue pairs, so one node yields no hash). 3 is chosen to sit above
+# that floor and inside the 2-4 residue "small local interaction motif" prior.
+min_patch_size = 3              # unit: residues   | provenance: verified vs installed FoldDisco | status: verified
+# Maximum residues for which a FoldDisco query is emitted. Patches above this
+# are still extracted and tabulated; only query emission is suppressed.
+# Chosen from two measurements rather than by guess:
+#  (a) a 30-residue query runs on the installed build in ~0.02 s against a
+#      single-structure index, so query length is not a tight tool limit;
+#  (b) on 4CHA chains A/B/C the observed patch sizes were
+#      r=5: 3-8, r=6.5: 3-11, r=8: 5-16, r=10: 8-23, r=12: 12-32 residues.
+# 60 therefore keeps every radius in the exploration set emittable, with
+# headroom to spare (max observed is 32, against a 60 cap). It was originally
+# sized to also cover a 15 A radius (observed max 55) that has since been
+# dropped from the default set -- see [ball_search].radii_angstrom and
+# docs/ASSUMPTIONS.md A-3.7b -- so the cap is now looser than it needs to be,
+# but it is left at 60 rather than retightened: it is an engineering ceiling,
+# NOT a sensitivity limit, and how FoldDisco's retrieval quality varies with
+# query length is uncharacterised and is exactly what the later sensitivity
+# study must measure.
+max_patch_size = 60             # unit: residues   | provenance: measured, see docs/ASSUMPTIONS.md | status: proposed
+# Restrict patch members to the scanned chains. False lets a patch span
+# chains, which for a multi-chain input mixes surfaces that are not a single
+# binder surface; recorded in the patch table either way.
+members_restricted_to_scanned_chains = true  # unit: bool | provenance: this impl | status: proposed
+# Include non-standard polymer residues as seeds/members. They get a MISSING
+# RSA (no Tien reference value), so as seeds they are unusable; as members
+# they are included geometrically and flagged.
+include_nonstandard_as_seed = false    # unit: bool | provenance: this impl | status: proposed
+include_nonstandard_as_member = true   # unit: bool | provenance: this impl | status: proposed
+
+
+[connectivity]
+# Residue-residue adjacency cutoff for the patch-internal contact graph, on
+# minimum heavy-atom distance. This is parameter (2) of the four
+# kept-separate radii. It is an intra-patch graph-adjacency parameter and is
+# NOT the ~5 A antibody-antigen contact cutoff from the project notes, which
+# is not computed anywhere in this component.
+contact_cutoff_angstrom = 5.0   # unit: A          | provenance: this impl | status: proposed
+# Handling of patch members not in the seed's connected component:
+# "drop" removes them, "flag" keeps them marked, "keep" ignores connectivity.
+disconnected_policy = "drop"    # unit: enum       | provenance: this impl | status: proposed
+# Optional additional seed-normal direction filter. Rejects members lying
+# behind the seed's outward surface normal, i.e. on the far side of the
+# protein. Cheap but crude. Off by default; the contact-graph check is primary.
+use_seed_normal_filter = false  # unit: bool       | provenance: this impl | status: proposed
+# Minimum cosine between the seed outward normal and (member - ball_center)
+# for a member to be kept when use_seed_normal_filter is true. -0.2 permits a
+# slightly-past-equator footprint.
+seed_normal_min_cosine = -0.2   # unit: cosine     | provenance: this impl | status: proposed
+
+
+[dedup]
+# Patches with an identical member residue set are always collapsed into one
+# record that retains every contributing seed. This is not configurable.
+# Additionally cluster strongly overlapping (but non-identical) patches by
+# Jaccard index of their member sets.
+cluster_overlapping = true      # unit: bool       | provenance: this impl | status: proposed
+jaccard_threshold = 0.8         # unit: fraction   | provenance: this impl | status: proposed
+
+
+[performance]
+# Worker processes. Default 1. Output is sorted canonically before IDs are
+# assigned, so results are byte-identical regardless of worker count.
+workers = 1                     # unit: count      | provenance: this impl | status: proposed
+max_workers_cap = 8             # unit: count      | provenance: this impl | status: proposed
+
+
+[folddisco]
+# Handoff description only. THIS COMPONENT RUNS NO SEARCH.
+# Values verified against the installed build; see docs/FOLDDISCO_CONTRACT.md.
+executable = "folddisco"        # unit: path       | provenance: /usr/local/bin/folddisco | status: verified
+# Emit one query file of "<structure_path>\t<comma-separated tokens>" lines.
+# Verified to work with `folddisco query -i <index> -q <file>`.
+emit_query_file = true          # unit: bool       | provenance: verified vs installed FoldDisco | status: verified
+# Token grammar is "<single-character chain><non-negative integer resnum>".
+# Verified rejections: insertion codes (B57A), multi-character chains (AAA57),
+# negative residue numbers (B-5, where '-' is the range separator).
+# Motifs containing such residues are emitted as NOT folddisco-expressible.
+#
+# The two search tolerances below are parameter (4) of the four kept-separate
+# radii/tolerances. They are recorded for the downstream stage and are NOT
+# used by ball_search_algo.
+distance_threshold_angstrom = 0.5   # unit: A      | provenance: installed FoldDisco default | status: documented
+angle_threshold_degrees = 5.0       # unit: deg    | provenance: installed FoldDisco default | status: documented
+# Reference index to search. No curated B-cell-epitope / antibody-antigen
+# reference collection has been built or chosen yet.
+reference_index_path = ""       # unit: path       | provenance: not yet decided | status: blocked

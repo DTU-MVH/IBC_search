@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ibc-search"
+version = "0.1.0"
+description = "Surface ball-scanning extraction of discontinuous structural motifs from de novo protein binders, as queries for FoldDisco."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "biotite>=1.0",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=15"]
+test = ["pytest>=8"]
+
+[project.scripts]
+ibc-search = "ibc_search.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ibc_search = ["data/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Make the src-layout package importable without requiring an install. On this
+# machine an editable install is unreliable: setuptools marks its
+# `__editable__*.pth` file with the macOS UF_HIDDEN flag, and CPython 3.14
+# skips hidden .pth files (site.py addpackage), so the path is never added.
+# See README "Environment notes".
+pythonpath = ["src"]
+markers = [
+    "network: test requires outbound network access to RCSB (deselect with -m 'not network')",
+    "folddisco: test invokes the real FoldDisco executable (opt in with -m folddisco)",
+]

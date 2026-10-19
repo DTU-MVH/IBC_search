@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Run outputs and caches (regenerate with `ibc-search scan`)
+results/
+cache/
+
+# macOS
+.DS_Store
