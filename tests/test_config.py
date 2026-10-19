@@ -146,9 +146,30 @@ def test_scale_labels_cover_the_default_radii():
     assert scale_label(config, 7.3) == "unlabelled"
 
 
-def test_reference_index_is_marked_blocked():
-    """The reference collection is a known open decision, not a default."""
+def test_epitope_reference_index_is_marked_blocked():
+    """The *epitope* reference collection is still an open decision.
+
+    `reference_index_path` was unblocked once the whole-PDB FoldDisco index
+    was adopted as the search background, but that index answers a different
+    question: structural similarity to any deposited structure, not
+    resemblance to a known epitope. The curated collection remains unchosen,
+    and keeping it as its own blocked key stops the PDB index from quietly
+    standing in for it.
+    """
     config = load_config()
-    assert config["folddisco"]["reference_index_path"] == ""
+    assert config["folddisco"]["epitope_reference_index_path"] == ""
     text = default_config_path().read_text()
     assert "status: blocked" in text
+
+
+def test_search_defaults_are_single_threaded():
+    """-t 1 is a correctness default, not a performance oversight.
+
+    The installed build does not write stdout line-atomically; above one
+    thread a fraction of hit rows come back torn by interleaved writes. See
+    the comment in default.toml and docs/FOLDDISCO_CONTRACT.md.
+    """
+    config = load_config()
+    assert config["folddisco"]["search_threads"] == 1
+    # query_residues is the join key from a hit back to its patch.
+    assert "query_residues" in config["folddisco"]["search_format_output"]

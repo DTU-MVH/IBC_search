@@ -14,8 +14,15 @@ from ibc_search.ext import benchmark, features, reference_index, scoring, search
 
 
 def test_search_stage_is_an_explicit_placeholder():
-    with pytest.raises(NotImplementedError, match="out of scope"):
+    """Only the *in-process* search is a placeholder.
+
+    Searching itself is done by scripts/folddisco_search.sh, so the error has
+    a second job beyond refusing: it must send the caller to the path that
+    works, rather than implying no search exists.
+    """
+    with pytest.raises(NotImplementedError, match="in-process") as excinfo:
         search.run_folddisco_search(Path("q.tsv"), Path("idx"), {})
+    assert "folddisco_search.sh" in str(excinfo.value)
     with pytest.raises(NotImplementedError):
         search.parse_folddisco_output(Path("out.tsv"))
 
