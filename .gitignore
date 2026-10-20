@@ -11,5 +11,8 @@ dist/
 results/
 cache/
 
+# EXPERIMENTAL ensemble probe outputs (regenerate with ibc_search.ensemble)
+ensembles/
+
 # macOS
 .DS_Store
