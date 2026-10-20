@@ -294,7 +294,7 @@ a run is reproducible from its own output.
 ## Performance
 
 Measured on this machine (Apple Silicon, arm64, Python 3.14.2), median of 3
-runs, all four default radii (`[5, 6.5, 8, 10] Å`), single process:
+runs, all four default radii (`[4, 5, 6, 7] Å`), single process:
 
 | structure | residues | heavy atoms | seeds | patches | parse | SASA | ball search | **total** |
 |---|---|---|---|---|---|---|---|---|

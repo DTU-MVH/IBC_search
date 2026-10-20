@@ -211,7 +211,7 @@ fifth, from the project notes, is not computed at all:
 |---|---|---|---|
 | 1 | SASA solvent probe radius | `[exposure].probe_radius_angstrom` | 1.4 Å |
 | 2 | patch-internal residue adjacency cutoff | `[connectivity].contact_cutoff_angstrom` | 5.0 Å |
-| 3 | patch extraction ball radius | `[ball_search].radii_angstrom` | 5/6.5/8/10 Å |
+| 3 | patch extraction ball radius | `[ball_search].radii_angstrom` | 4/5/6/7 Å |
 | 4 | FoldDisco search tolerances | `[folddisco].distance_threshold_angstrom`, `.angle_threshold_degrees` | 0.5 Å, 5.0° |
 | — | antibody–antigen contact cutoff (~5 Å, notes) | **not computed anywhere** | — |
 

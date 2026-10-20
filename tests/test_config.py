@@ -19,7 +19,7 @@ def test_shipped_defaults_load_and_validate():
     config = load_config()
     assert config["exposure"]["probe_radius_angstrom"] == 1.4
     assert config["ball_search"]["center_mode"] == "cb"
-    assert config["ball_search"]["radii_angstrom"] == [5.0, 6.5, 8.0, 10.0]
+    assert config["ball_search"]["radii_angstrom"] == [4.0, 5.0, 6.0, 7.0]
     assert config["performance"]["workers"] == 1
     validate_config(config)
 
