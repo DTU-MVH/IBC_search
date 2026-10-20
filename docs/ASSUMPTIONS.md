@@ -34,12 +34,33 @@ Divergences from the brief, and why:
 
 ## 1. Input handling
 
-**A-1.1** A 4-character token is treated as a PDB entry ID only if it matches
-`^[0-9][A-Za-z0-9]{3}$` **and** no file of that name exists. A local file
-always wins. Status: **proposed**.
+**A-1.1** A token is treated as a PDB entry ID only if it matches either the
+legacy form `^[0-9][A-Za-z0-9]{3}$` or the extended form
+`^pdb_[0-9A-Za-z]{8}$` (case-insensitive) **and** no file of that name
+exists. A local file always wins. Status: **proposed**.
 *Consequence:* a 4-letter name not starting with a digit is never read as an
-entry ID. Extended 8-character identifiers (`pdb_0000xxxx`) are rejected with
-an explicit message rather than guessed at.
+entry ID, so a four-letter filename cannot trigger a download.
+
+**Both spellings are supported**, because the four-character space is close
+to exhausted and the PDB is migrating to extended identifiers. Verified
+against RCSB: `4HHB.cif.gz` and `pdb_00004hhb.cif.gz` decompress to
+byte-identical content. An extended ID of the form `pdb_0000XXXX` therefore
+canonicalises to its legacy `XXXX` equivalent for fetching, so either
+spelling gives one URL, one cache entry, one SHA-256 and identical patch
+IDs. An entry genuinely outside the four-character space keeps its extended
+ID throughout.
+
+*Format limitation, verified:* `pdb_00004hhb.pdb.gz` returns HTTP 404 while
+the `.cif.gz` is served — the legacy PDB format cannot express an identifier
+outside the four-character space, which is why extended IDs exist at all.
+With `[input].fetch_format = "pdb"`, an entry having no legacy equivalent is
+refused up front with a message naming mmCIF, rather than failing later on an
+opaque 404. The default is mmCIF, so this does not arise by default.
+
+*Not live-verified:* the genuinely-extended path (an ID **not** of the form
+`pdb_0000XXXX`) is unit-tested but has never been exercised against a real
+download, because the PDB has not yet issued such an entry. The parsing,
+canonicalisation and format refusal are tested; the HTTP round trip is not.
 
 **A-1.2** Fetched entries are retrieved as mmCIF (`.cif.gz`) from
 `https://files.rcsb.org/download/<ID>.cif.gz`, with URL, UTC date, SHA-256 and

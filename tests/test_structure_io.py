@@ -13,6 +13,7 @@ from ibc_search.structure_io import (
     RESIDUE_CLASS_ION,
     RESIDUE_CLASS_WATER,
     looks_like_pdb_id,
+    parse_entry_id,
     parse_structure,
     resolve_input,
 )
@@ -232,9 +233,53 @@ def test_nonexistent_input_raises(base_config):
         resolve_input("/no/such/path/model.pdb", base_config)
 
 
-def test_extended_pdb_id_rejected_explicitly(base_config):
-    with pytest.raises(InputError, match="not supported yet"):
-        resolve_input("pdb_00001abc", base_config)
+def test_both_entry_id_spellings_are_accepted():
+    """The 4-character space is nearly exhausted; both forms must work."""
+    legacy = parse_entry_id("4cha")
+    assert legacy is not None
+    assert legacy.legacy == "4CHA"
+    assert legacy.extended == "pdb_00004cha"
+
+    extended = parse_entry_id("pdb_00004cha")
+    assert extended is not None
+    assert extended.legacy == "4CHA"
+    # Same entry either way -> one download, one cache entry, same patch IDs.
+    assert extended.fetch_id == legacy.fetch_id == "4CHA"
+    assert extended.structure_id == legacy.structure_id == "4CHA"
+
+
+def test_extended_id_is_case_insensitive():
+    for spelling in ("pdb_00004CHA", "PDB_00004cha", "Pdb_00004Cha"):
+        parsed = parse_entry_id(spelling)
+        assert parsed is not None, spelling
+        assert parsed.legacy == "4CHA"
+        assert parsed.extended == spelling.lower()
+
+
+def test_entry_outside_the_legacy_space_keeps_its_extended_id():
+    """A genuinely extended ID must not be forced into a 4-character form."""
+    parsed = parse_entry_id("pdb_1a2b3c4d")
+    assert parsed is not None
+    assert parsed.legacy is None
+    assert parsed.fetch_id == "pdb_1a2b3c4d"
+    assert parsed.structure_id == "pdb_1a2b3c4d"
+
+
+def test_non_entry_tokens_are_still_rejected():
+    """Widening the grammar must not start reading filenames as entry IDs."""
+    for token in ("ABCD", "pdb_0000", "pdb_000012345", "chain", "4CH"):
+        assert parse_entry_id(token) is None, token
+
+
+def test_extended_only_entry_refuses_pdb_format_fetch(base_config):
+    """RCSB serves no legacy-format file for an out-of-space entry.
+
+    Verified live: pdb_00004hhb.pdb.gz is a 404 while the .cif.gz is served.
+    Refusing up front beats a confusing HTTP error from the fetch.
+    """
+    base_config["input"]["fetch_format"] = "pdb"
+    with pytest.raises(InputError, match="only\\s+mmCIF|only mmCIF"):
+        resolve_input("pdb_1a2b3c4d", base_config)
 
 
 def test_malformed_structure_file_raises(tmp_path, base_config):

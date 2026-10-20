@@ -41,12 +41,23 @@ from .errors import FetchError, InputError, StructureParseError
 from .residue_id import ResidueId, ResidueIndex
 
 PDB_ID_RE = re.compile(r"^[0-9][A-Za-z0-9]{3}$")
-"""A PDB entry ID: four characters, first a digit. Matches RCSB's legacy form.
+"""A legacy PDB entry ID: four characters, first a digit.
 
 Deliberately strict so that an ambiguous four-character *filename* is not
-mistaken for an entry ID. Extended 8-character IDs (``pdb_0000XXXX``) are not
-supported yet and are rejected with a clear message rather than guessed at.
+mistaken for an entry ID. Every legacy ID begins with a digit, so a
+four-letter word never resolves to a download.
 """
+
+PDB_EXTENDED_ID_RE = re.compile(r"^pdb_[0-9A-Za-z]{8}$", re.IGNORECASE)
+"""An extended PDBx identifier: ``pdb_`` followed by eight characters.
+
+The PDB is migrating to this form because the four-character space is close
+to exhausted, so both spellings must be accepted. Matching is
+case-insensitive; ``pdb_00004hhb`` is the canonical lowercase form.
+"""
+
+_LEGACY_IN_EXTENDED_RE = re.compile(r"^pdb_0000([0-9][0-9A-Za-z]{3})$", re.IGNORECASE)
+"""Extended IDs that encode a legacy entry: ``pdb_0000XXXX`` -> ``XXXX``."""
 
 WATER_NAMES = frozenset({"HOH", "DOD", "WAT", "H2O"})
 
@@ -234,8 +245,61 @@ def _detect_format(path: Path) -> tuple[str, bool]:
     )
 
 
+@dataclass(frozen=True)
+class EntryId:
+    """A PDB entry identifier in both spellings it may legitimately have.
+
+    ``legacy`` is the four-character form, or ``None`` for an entry outside
+    that space. ``extended`` is the ``pdb_XXXXXXXX`` form, which every entry
+    has.
+
+    Verified against RCSB: ``4HHB.cif.gz`` and ``pdb_00004hhb.cif.gz``
+    decompress to byte-identical content, so the legacy form is preferred for
+    fetching whenever one exists. That keeps one URL, one cache entry and one
+    SHA-256 per entry however the user spelled it -- which matters because the
+    manifest records all three as provenance.
+    """
+
+    legacy: str | None
+    extended: str
+
+    @property
+    def fetch_id(self) -> str:
+        """The identifier used in the download URL."""
+        return self.legacy if self.legacy is not None else self.extended
+
+    @property
+    def structure_id(self) -> str:
+        """Identifier used in patch IDs and output tables.
+
+        The legacy form when the entry has one, so that ``4CHA`` and
+        ``pdb_00004cha`` -- the same entry -- yield identical patch IDs.
+        """
+        return self.fetch_id
+
+
+def parse_entry_id(spec: str) -> EntryId | None:
+    """Parse either accepted entry-ID spelling, or return ``None``.
+
+    Accepts the legacy four-character form and the extended
+    ``pdb_XXXXXXXX`` form, the latter case-insensitively.
+    """
+    token = spec.strip()
+    if PDB_ID_RE.match(token):
+        legacy = token.upper()
+        return EntryId(legacy=legacy, extended=f"pdb_0000{legacy.lower()}")
+    if PDB_EXTENDED_ID_RE.match(token):
+        match = _LEGACY_IN_EXTENDED_RE.match(token)
+        return EntryId(
+            legacy=match.group(1).upper() if match else None,
+            extended=token.lower(),
+        )
+    return None
+
+
 def looks_like_pdb_id(spec: str) -> bool:
-    return bool(PDB_ID_RE.match(spec.strip()))
+    """True for either accepted entry-ID spelling."""
+    return parse_entry_id(spec) is not None
 
 
 def resolve_input(spec: str, config: dict[str, Any]) -> InputSource:
@@ -249,18 +313,14 @@ def resolve_input(spec: str, config: dict[str, Any]) -> InputSource:
     if candidate.exists():
         return _source_from_file(candidate)
 
-    if looks_like_pdb_id(spec):
-        return fetch_pdb_entry(spec.strip().upper(), config)
-
-    if re.match(r"^pdb_[0-9a-zA-Z]{8}$", spec.strip()):
-        raise InputError(
-            f"extended PDB identifier {spec!r} is not supported yet; pass the "
-            "corresponding 4-character entry ID or a local file path"
-        )
+    entry = parse_entry_id(spec)
+    if entry is not None:
+        return fetch_pdb_entry(entry, config)
 
     raise InputError(
-        f"input {spec!r} is neither an existing file nor a 4-character PDB "
-        "entry ID (expected e.g. '4CHA' or '/path/to/model.pdb')"
+        f"input {spec!r} is neither an existing file nor a PDB entry ID "
+        "(expected a 4-character ID such as '4CHA', an extended ID such as "
+        "'pdb_00004cha', or a local file path)"
     )
 
 
@@ -283,20 +343,40 @@ def _source_from_file(path: Path) -> InputSource:
     )
 
 
-def fetch_pdb_entry(pdb_id: str, config: dict[str, Any]) -> InputSource:
+def fetch_pdb_entry(entry: EntryId | str, config: dict[str, Any]) -> InputSource:
     """Fetch a PDB entry from RCSB, caching it on disk.
 
-    mmCIF is preferred (see config provenance): it carries both
-    ``label_asym_id`` and ``auth_asym_id`` and has no 80-column or
-    single-character-chain limits.
+    Accepts either spelling of an entry ID; a bare string is parsed. mmCIF is
+    preferred (see config provenance): it carries both ``label_asym_id`` and
+    ``auth_asym_id`` and has no 80-column or single-character-chain limits.
 
     On any network failure this raises :class:`FetchError`. It never falls
     back to another format or source, because a silent fallback would make the
     manifest's provenance record untrue.
     """
+    if isinstance(entry, str):
+        parsed = parse_entry_id(entry)
+        if parsed is None:
+            raise InputError(f"{entry!r} is not a PDB entry ID in either form")
+        entry = parsed
+
     fmt = config["input"]["fetch_format"]
     ext = "cif.gz" if fmt == "mmcif" else "pdb.gz"
     file_format = "mmcif" if fmt == "mmcif" else "pdb"
+
+    # Verified against RCSB: pdb_00004hhb.pdb.gz returns HTTP 404 while the
+    # .cif.gz is served. The legacy format cannot express an identifier
+    # outside the four-character space -- that exhaustion is precisely why
+    # extended IDs exist -- so there is nothing to fall back to, and refusing
+    # here beats an opaque 404 from the fetch below.
+    if file_format == "pdb" and entry.legacy is None:
+        raise InputError(
+            f"entry {entry.extended!r} lies outside the four-character ID "
+            "space, and RCSB serves no legacy PDB-format file for it, only "
+            'mmCIF. Set [input].fetch_format = "mmcif" (the default).'
+        )
+
+    pdb_id = entry.fetch_id
     url = f"https://files.rcsb.org/download/{pdb_id}.{ext}"
 
     cache_dir = Path(config["input"]["cache_dir"]).expanduser()
@@ -318,7 +398,7 @@ def fetch_pdb_entry(pdb_id: str, config: dict[str, Any]) -> InputSource:
             gzipped=True,
             sha256=sha256_of(cached),
             size_bytes=cached.stat().st_size,
-            structure_id=pdb_id,
+            structure_id=entry.structure_id,
             pdb_id=pdb_id,
             fetch_url=meta.get("fetch_url", url),
             fetch_date_utc=meta.get("fetch_date_utc"),
@@ -373,7 +453,7 @@ def fetch_pdb_entry(pdb_id: str, config: dict[str, Any]) -> InputSource:
         gzipped=True,
         sha256=digest,
         size_bytes=cached.stat().st_size,
-        structure_id=pdb_id,
+        structure_id=entry.structure_id,
         pdb_id=pdb_id,
         fetch_url=url,
         fetch_date_utc=fetch_date,

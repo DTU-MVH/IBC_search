@@ -81,9 +81,19 @@ PYTHONPATH=src .venv/bin/python -m ibc_search scan \
 
 ### Scan a PDB entry ID (fetched from RCSB and cached)
 
+Either spelling works — the legacy 4-character ID, or the extended
+`pdb_XXXXXXXX` form the PDB is migrating to:
+
 ```bash
 PYTHONPATH=src .venv/bin/python -m ibc_search scan 1CRN -o results/1crn
+PYTHONPATH=src .venv/bin/python -m ibc_search scan pdb_00001crn -o results/1crn
 ```
+
+Both resolve to the same download, cache entry and patch IDs (verified: the
+two URLs serve byte-identical content). RCSB serves **no legacy PDB-format
+file** for an entry outside the 4-character space, so with
+`[input].fetch_format = "pdb"` such an entry is refused with a clear message;
+the mmCIF default is unaffected.
 
 mmCIF is preferred for fetched entries. The URL, UTC date and SHA-256 are
 recorded in the run manifest. If the network is unavailable the run fails with

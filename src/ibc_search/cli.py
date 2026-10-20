@@ -72,13 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan = sub.add_parser(
         "scan",
-        help="scan one structure from a file path or a 4-character PDB entry ID",
+        help="scan one structure from a file path or a PDB entry ID (4-character or extended)",
     )
     scan.add_argument(
         "input",
         help=(
             "path to a .pdb/.ent/.cif/.mmcif file (optionally .gz), or a "
-            "4-character PDB entry ID such as 4CHA"
+            "PDB entry ID in either form: 4-character (4CHA) or extended "
+            "(pdb_00004cha)"
         ),
     )
     scan.add_argument(
