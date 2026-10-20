@@ -80,6 +80,7 @@ usage:
   folddisco_search.sh status
   folddisco_search.sh extract [--force]
   folddisco_search.sh search <results_dir> [options] [-- <extra folddisco args>]
+  folddisco_search.sh join <results_dir> [-o PATH] [--raw PATH] [--strict]
 
 search options:
   -i, --index PATH       index table to search   [$IBC_FOLDDISCO_INDEX]
@@ -197,6 +198,151 @@ cmd_extract() {
 }
 
 # ---------------------------------------------------------------------------
+# join: attach patch identity to FoldDisco output
+#
+# Separated from `search` so a raw file can be joined on its own -- notably
+# when a long search was interrupted and the completed query blocks are still
+# worth keeping.
+# ---------------------------------------------------------------------------
+
+do_join() {
+    local index_file="$1" raw="$2" output="$3" strict="${4:-0}"
+    local torn_count_file
+    torn_count_file="$(mktemp -t folddisco_torn)"
+
+    # The join key is the query string itself, which is safe to rely on:
+    # `query_residues` is an exact echo of the tokens that were sent (unlike
+    # `matching_residues`, see the contract doc). A handful of patches can
+    # share one query string -- the same member set extracted at two radii --
+    # and those are genuinely indistinguishable in FoldDisco's output, so they
+    # are reported as `id1|id2` rather than silently resolved to one.
+    awk -F'\t' -v OFS='\t' \
+        -v quarantine="${output%.tsv}.malformed.tsv" \
+        -v tornflag="${torn_count_file}" \
+        -v idxfile="${index_file}" '
+        # pass 1: query string -> patch identity, from the scan index file
+        NR == FNR {
+            if (FNR > 1) {
+                k = $7
+                if (k in patch) {
+                    patch[k] = patch[k] "|" $2
+                    if (radius[k] != $4) radius[k] = radius[k] "|" $4
+                    if (scale[k]  != $5) scale[k]  = scale[k]  "|" $5
+                    ambiguous[k] = 1
+                } else {
+                    patch[k] = $2; radius[k] = $4; scale[k] = $5
+                }
+                total_queries++
+            }
+            next
+        }
+        # pass 2: the FoldDisco output, whose blocks may be in any order
+        header == "" {
+            header = $0
+            n_blocks = 1
+            ncol = NF
+            for (i = 1; i <= NF; i++) if ($i == "query_residues") qcol = i
+            if (!qcol) {
+                print "error: --format-output must include query_residues; " \
+                      "it is the key that joins a hit back to its patch" > "/dev/stderr"
+                exit 3
+            }
+            print "patch_id", "radius_angstrom", "scale", $0
+            next
+        }
+        $0 == header { n_blocks++; next } # a later query block repeats it
+        # This build does not write stdout line-atomically when -t > 1:
+        # lines from concurrent threads interleave mid-line, yielding rows
+        # with the wrong field count. Measured on 5 identical -t 10 runs over
+        # 1225 hit rows: 2, 0, 0, 2 and 4 torn rows; at -t 1, never any.
+        # Such a row is unparseable, so it is quarantined, never emitted.
+        NF != ncol {
+            n_torn++
+            print > quarantine
+            next
+        }
+        {
+            k = $qcol
+            if (k in patch) {
+                seen[k] = 1
+                if (k in ambiguous) n_amb++
+                print patch[k], radius[k], scale[k], $0
+            } else {
+                n_orphan++
+                print "UNKNOWN", "", "", $0
+            }
+        }
+        END {
+            hit = 0
+            for (k in seen) hit++
+            # n_blocks is how many queries FoldDisco actually emitted a header
+            # for. On a complete run it equals the query count; on an
+            # interrupted one it is smaller, and the difference is queries that
+            # never ran -- which must not be reported as "found nothing".
+            printf "queries searched: %d of %d, with hits: %d, with none: %d\n", \
+                n_blocks, total_queries, hit, n_blocks - hit > "/dev/stderr"
+            if (n_blocks < total_queries)
+                printf "WARNING: PARTIAL -- %d of %d queries were never searched " \
+                       "(output truncated/interrupted), not searched-and-empty\n", \
+                       total_queries - n_blocks, total_queries > "/dev/stderr"
+            if (n_amb)
+                printf "note: %d rows match a query string shared by >1 patch; " \
+                       "their patch_id lists every candidate\n", n_amb > "/dev/stderr"
+            if (n_orphan)
+                printf "WARNING: %d hit rows carry a query string absent from %s\n", \
+                       n_orphan, idxfile > "/dev/stderr"
+            if (n_torn) {
+                printf "WARNING: %d rows were torn by non-atomic " \
+                       "multithreaded writes and were DROPPED\n", n_torn > "/dev/stderr"
+                printf "         quarantined in %s; re-run with -t 1 for a clean stream\n", \
+                       quarantine > "/dev/stderr"
+            }
+            print n_torn + 0 > tornflag
+        }
+    ' "${index_file}" "${raw}" > "${output}"
+
+    local n_torn
+    n_torn="$(cat "${torn_count_file}")"
+    rm -f "${torn_count_file}"
+    if [[ "${n_torn}" -eq 0 ]]; then
+        rm -f "${output%.tsv}.malformed.tsv"
+    elif [[ ${strict} -eq 1 ]]; then
+        die "${n_torn} torn output rows and --strict is set; re-run with -t 1"
+    fi
+}
+
+cmd_join() {
+    local results_dir="" output="" raw="" strict=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -o|--output) output="$2"; shift 2 ;;
+            --raw)       raw="$2"; shift 2 ;;
+            --strict)    strict=1; shift ;;
+            -h|--help)   usage; exit 0 ;;
+            -*)          die "unknown option $1" ;;
+            *)           [[ -n "${results_dir}" ]] && die "unexpected argument $1"
+                         results_dir="$1"; shift ;;
+        esac
+    done
+
+    [[ -n "${results_dir}" ]] || { usage; die "a results directory is required"; }
+    [[ -d "${results_dir}" ]] || die "not a directory: ${results_dir}"
+
+    [[ -n "${output}" ]] || output="${results_dir}/folddisco_hits.tsv"
+    [[ -n "${raw}" ]]    || raw="${output%.tsv}.raw.tsv"
+    local index_file="${results_dir}/folddisco_queries.index.tsv"
+
+    [[ -f "${raw}" ]] || die "no raw FoldDisco output at ${raw}"
+    [[ -f "${index_file}" ]] || die "no folddisco_queries.index.tsv in ${results_dir}"
+
+    note "joining ${raw}"
+    do_join "${index_file}" "${raw}" "${output}" "${strict}"
+    local n_hits
+    n_hits="$(( $(grep -c '' "${output}") - 1 ))"
+    note "wrote ${n_hits} hit rows to ${output}"
+}
+
+# ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
 
@@ -250,8 +396,6 @@ cmd_search() {
 
     [[ -n "${output}" ]] || output="${results_dir}/folddisco_hits.tsv"
     local raw="${output%.tsv}.raw.tsv"
-    local torn_count_file
-    torn_count_file="$(mktemp -t folddisco_torn)"
     local n_queries
     n_queries="$(grep -c '' "${query_file}")"
 
@@ -293,96 +437,7 @@ cmd_search() {
         ${passthrough[@]+"${passthrough[@]}"} \
         > "${raw}"
 
-    # The join key is the query string itself, which is safe to rely on:
-    # `query_residues` is an exact echo of the tokens that were sent (unlike
-    # `matching_residues`, see the contract doc). A handful of patches can
-    # share one query string -- the same member set extracted at two radii --
-    # and those are genuinely indistinguishable in FoldDisco's output, so they
-    # are reported as `id1|id2` rather than silently resolved to one.
-    awk -F'\t' -v OFS='\t' \
-        -v quarantine="${output%.tsv}.malformed.tsv" \
-        -v tornflag="${torn_count_file}" \
-        -v idxfile="${index_file}" '
-        # pass 1: query string -> patch identity, from the scan index file
-        NR == FNR {
-            if (FNR > 1) {
-                k = $7
-                if (k in patch) {
-                    patch[k] = patch[k] "|" $2
-                    if (radius[k] != $4) radius[k] = radius[k] "|" $4
-                    if (scale[k]  != $5) scale[k]  = scale[k]  "|" $5
-                    ambiguous[k] = 1
-                } else {
-                    patch[k] = $2; radius[k] = $4; scale[k] = $5
-                }
-                total_queries++
-            }
-            next
-        }
-        # pass 2: the FoldDisco output, whose blocks may be in any order
-        header == "" {
-            header = $0
-            ncol = NF
-            for (i = 1; i <= NF; i++) if ($i == "query_residues") qcol = i
-            if (!qcol) {
-                print "error: --format-output must include query_residues; " \
-                      "it is the key that joins a hit back to its patch" > "/dev/stderr"
-                exit 3
-            }
-            print "patch_id", "radius_angstrom", "scale", $0
-            next
-        }
-        $0 == header { next }             # a later query block repeats it
-        # This build does not write stdout line-atomically when -t > 1:
-        # lines from concurrent threads interleave mid-line, yielding rows
-        # with the wrong field count. Measured on 5 identical -t 10 runs over
-        # 1225 hit rows: 2, 0, 0, 2 and 4 torn rows; at -t 1, never any.
-        # Such a row is unparseable, so it is quarantined, never emitted.
-        NF != ncol {
-            n_torn++
-            print > quarantine
-            next
-        }
-        {
-            k = $qcol
-            if (k in patch) {
-                seen[k] = 1
-                if (k in ambiguous) n_amb++
-                print patch[k], radius[k], scale[k], $0
-            } else {
-                n_orphan++
-                print "UNKNOWN", "", "", $0
-            }
-        }
-        END {
-            hit = 0
-            for (k in seen) hit++
-            printf "queries: %d, with hits: %d, with none: %d\n", \
-                total_queries, hit, total_queries - hit > "/dev/stderr"
-            if (n_amb)
-                printf "note: %d rows match a query string shared by >1 patch; " \
-                       "their patch_id lists every candidate\n", n_amb > "/dev/stderr"
-            if (n_orphan)
-                printf "WARNING: %d hit rows carry a query string absent from %s\n", \
-                       n_orphan, idxfile > "/dev/stderr"
-            if (n_torn) {
-                printf "WARNING: %d rows were torn by non-atomic " \
-                       "multithreaded writes and were DROPPED\n", n_torn > "/dev/stderr"
-                printf "         quarantined in %s; re-run with -t 1 for a clean stream\n", \
-                       quarantine > "/dev/stderr"
-            }
-            print n_torn + 0 > tornflag
-        }
-    ' "${index_file}" "${raw}" > "${output}"
-
-    local n_torn
-    n_torn="$(cat "${torn_count_file}")"
-    rm -f "${torn_count_file}"
-    if [[ "${n_torn}" -eq 0 ]]; then
-        rm -f "${output%.tsv}.malformed.tsv"
-    elif [[ ${strict} -eq 1 ]]; then
-        die "${n_torn} torn output rows and --strict is set; re-run with -t 1"
-    fi
+    do_join "${index_file}" "${raw}" "${output}" "${strict}"
 
     local n_hits
     n_hits="$(( $(grep -c '' "${output}") - 1 ))"
@@ -404,6 +459,7 @@ case "${1:-}" in
     status)        shift; cmd_status "$@" ;;
     extract)       shift; cmd_extract "$@" ;;
     search)        shift; cmd_search "$@" ;;
+    join)          shift; cmd_join "$@" ;;
     -h|--help|"")  usage; exit 0 ;;
     *)             usage; die "unknown command '$1'" ;;
 esac

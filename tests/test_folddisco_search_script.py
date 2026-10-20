@@ -113,7 +113,8 @@ def test_hits_are_joined_back_to_their_patch(tmp_path: Path, index_file: Path):
     assert lines[0].split("\t")[:3] == ["patch_id", "radius_angstrom", "scale"]
     assert len(lines) == 2, "one hit row expected"
     assert lines[1].startswith("P_a\t5.0000\tsubmotif\t")
-    assert "queries: 2, with hits: 1, with none: 1" in completed.stderr
+    assert "queries searched: 2 of 2, with hits: 1, with none: 1" in completed.stderr
+    assert "PARTIAL" not in completed.stderr
 
 
 def test_join_does_not_depend_on_output_order(tmp_path: Path, index_file: Path):
@@ -227,3 +228,42 @@ def test_status_reports_the_installed_build():
     assert completed.returncode == 0, completed.stderr
     assert "folddisco binary" in completed.stdout
     assert "index" in completed.stdout
+
+
+def test_partial_output_is_not_reported_as_empty_queries(
+    tmp_path: Path, index_file: Path
+):
+    """An interrupted search must not look like queries that found nothing.
+
+    A long search can be stopped part-way and the completed blocks are still
+    worth joining, but "never ran" and "ran and matched nothing" are different
+    facts and conflating them would silently understate coverage.
+    """
+    results = _make_results_dir(
+        tmp_path,
+        [("P_a", "A1,A2,A3"), ("P_b", "B7,B8,B9"), ("P_c", "C1,C2,C3")],
+    )
+    # Only the first query's block is present: the run was cut short.
+    output = f"{HEADER}\n4cha.pdb\t0.5\t0.17\t2\tA1,A2,A3\tB96,B97,_\n"
+    completed = _run(results, index_file, _stub_folddisco(tmp_path, output))
+    assert completed.returncode == 0, completed.stderr
+
+    assert "queries searched: 1 of 3" in completed.stderr
+    assert "PARTIAL -- 2 of 3 queries were never searched" in completed.stderr
+
+
+def test_join_runs_standalone_on_an_existing_raw_file(
+    tmp_path: Path, index_file: Path
+):
+    """`join` must work without re-searching, for interrupted runs."""
+    results = _make_results_dir(tmp_path, [("P_a", "A1,A2,A3")])
+    raw = results / "folddisco_hits.raw.tsv"
+    raw.write_text(
+        f"{HEADER}\n4cha.pdb\t0.5\t0.17\t2\tA1,A2,A3\tB96,B97,_\n", encoding="utf-8"
+    )
+    completed = subprocess.run(
+        [str(SCRIPT), "join", str(results)], capture_output=True, text=True
+    )
+    assert completed.returncode == 0, completed.stderr
+    row = (results / "folddisco_hits.tsv").read_text().strip().split("\n")[1]
+    assert row.startswith("P_a\t")
