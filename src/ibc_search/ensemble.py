@@ -98,6 +98,7 @@ def make_ensemble(
     seed: int = 0,
     sigma_floor: float = 0.05,
     sigma_cap: float = 2.0,
+    sigma_scale: float = 1.0,
     config: dict[str, Any] | None = None,
 ) -> list[EnsembleMember]:
     """Write ``members`` perturbed copies of ``input_spec`` into ``out_dir``.
@@ -146,6 +147,12 @@ def make_ensemble(
     np.add.at(sigma_residue, residue_index, sigma_atom)
     sigma_residue /= np.maximum(counts, 1)
 
+    # A sweep knob. At scale 1.0 the displacement implied by these B-factors
+    # moves 70% of nearby residue pairs further than FoldDisco's 0.5 A
+    # distance threshold, so results change almost by construction. Scaling
+    # down probes where sensitivity actually begins.
+    sigma_residue = sigma_residue * sigma_scale
+
     written: list[EnsembleMember] = []
     for member in range(1, members + 1):
         member_seed = seed + member
@@ -181,6 +188,7 @@ def make_ensemble(
         "members": members,
         "base_seed": seed,
         "sigma_floor_angstrom": sigma_floor,
+        "sigma_scale": sigma_scale,
         "sigma_cap_angstrom": sigma_cap,
         "residues_perturbed": n_residues,
         "sigma_residue_angstrom": {
@@ -211,6 +219,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-n", "--members", type=int, default=DEFAULT_MEMBERS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--sigma-cap", type=float, default=2.0)
+    parser.add_argument(
+        "--sigma-scale", type=float, default=1.0,
+        help="multiply all B-factor-derived sigmas by this (sweep knob)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -220,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             members=args.members,
             seed=args.seed,
             sigma_cap=args.sigma_cap,
+            sigma_scale=args.sigma_scale,
         )
     except IbcSearchError as exc:
         print(f"error: {exc}", file=sys.stderr)
