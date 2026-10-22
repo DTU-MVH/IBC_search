@@ -80,6 +80,7 @@ usage:
   folddisco_search.sh status
   folddisco_search.sh extract [--force]
   folddisco_search.sh search <results_dir> [options] [-- <extra folddisco args>]
+  folddisco_search.sh search-ensemble <ensemble_dir> [-j N] [search options]
   folddisco_search.sh join <results_dir> [-o PATH] [--raw PATH] [--strict]
 
 search options:
@@ -92,6 +93,8 @@ search options:
       --rmsd X           maximum RMSD cutoff
       --keep-raw         keep the unjoined FoldDisco output alongside the hits
       --strict           fail if FoldDisco emitted any torn (interleaved) row
+      --no-exclude-self  keep hits to the scanned entry itself (excluded by default)
+      --exclude-id ID    also drop hits to this PDB entry; repeatable
 
 Anything after `--` is passed through to `folddisco query` untouched, so the
 filtering flags this script does not wrap (--sampling-ratio, --covered-node,
@@ -197,6 +200,40 @@ cmd_extract() {
     cmd_status
 }
 
+
+# ---------------------------------------------------------------------------
+# Self-hit exclusion
+#
+# The index is the whole PDB, so scanning a deposited entry and searching it
+# retrieves that entry matching itself. Those rows are real but circular, and
+# they dominate: on 2N74 the entry was its own top hit for 56 of 87 motifs and
+# 29% of all hit rows were self-matches.
+#
+# The entry ID comes from the scan's own manifest (input.structure_id) and is
+# used ONLY when it looks like a PDB entry ID, matching the same grammar the
+# package uses. For a structure that is not a deposited entry -- a design, a
+# local model -- there is nothing to exclude and nothing is guessed.
+#
+# NOTE what this does NOT do: it removes the entry itself, not homologues or
+# other depositions of the same protein. Those are equally uninformative and
+# cannot be identified from an entry ID alone. Pass --exclude-id for each one
+# you know of.
+# ---------------------------------------------------------------------------
+
+detect_self_id() {
+    local results_dir="$1" manifest="$1/run_manifest.json"
+    [[ -f "${manifest}" ]] || return 0
+    python3 - "${manifest}" <<'PY'
+import json, re, sys
+try:
+    sid = (json.load(open(sys.argv[1])).get("input") or {}).get("structure_id") or ""
+except Exception:
+    sys.exit(0)
+# Same grammar as ibc_search.structure_io.PDB_ID_RE.
+print(sid.lower() if re.fullmatch(r"[0-9][A-Za-z0-9]{3}", sid) else "")
+PY
+}
+
 # ---------------------------------------------------------------------------
 # join: attach patch identity to FoldDisco output
 #
@@ -206,7 +243,7 @@ cmd_extract() {
 # ---------------------------------------------------------------------------
 
 do_join() {
-    local index_file="$1" raw="$2" output="$3" strict="${4:-0}"
+    local index_file="$1" raw="$2" output="$3" strict="${4:-0}" exclude_ids="${5:-}"
     local torn_count_file
     torn_count_file="$(mktemp -t folddisco_torn)"
 
@@ -219,7 +256,9 @@ do_join() {
     awk -F'\t' -v OFS='\t' \
         -v quarantine="${output%.tsv}.malformed.tsv" \
         -v tornflag="${torn_count_file}" \
-        -v idxfile="${index_file}" '
+        -v idxfile="${index_file}" \
+        -v exclude_ids="${exclude_ids}" \
+        -v selfhits="${output%.tsv}.selfhits.tsv" '
         # pass 1: query string -> patch identity, from the scan index file
         NR == FNR {
             if (FNR > 1) {
@@ -241,7 +280,16 @@ do_join() {
             header = $0
             n_blocks = 1
             ncol = NF
-            for (i = 1; i <= NF; i++) if ($i == "query_residues") qcol = i
+            for (i = 1; i <= NF; i++) {
+                if ($i == "query_residues") qcol = i
+                if ($i == "tid") tidcol = i
+            }
+            n_excl = split(exclude_ids, excl, " ")
+            if (n_excl && !tidcol) {
+                print "WARNING: --format-output has no tid column, so self-hits " \
+                      "cannot be excluded" > "/dev/stderr"
+                n_excl = 0
+            }
             if (!qcol) {
                 print "error: --format-output must include query_residues; " \
                       "it is the key that joins a hit back to its patch" > "/dev/stderr"
@@ -260,6 +308,18 @@ do_join() {
             n_torn++
             print > quarantine
             next
+        }
+        # Drop rows belonging to the scanned entry itself. They are kept in a side file
+        # rather than discarded silently, so the exclusion can be audited.
+        n_excl && tidcol {
+            tl = tolower($tidcol)
+            for (e = 1; e <= n_excl; e++) {
+                if (index(tl, "pdb" excl[e] ".") || tl == excl[e]) {
+                    n_self++
+                    print > selfhits
+                    next
+                }
+            }
         }
         {
             k = $qcol
@@ -291,6 +351,9 @@ do_join() {
             if (n_orphan)
                 printf "WARNING: %d hit rows carry a query string absent from %s\n", \
                        n_orphan, idxfile > "/dev/stderr"
+            if (n_self)
+                printf "excluded %d self-hit rows (%s); kept in %s\n", \
+                       n_self, exclude_ids, selfhits > "/dev/stderr"
             if (n_torn) {
                 printf "WARNING: %d rows were torn by non-atomic " \
                        "multithreaded writes and were DROPPED\n", n_torn > "/dev/stderr"
@@ -312,12 +375,14 @@ do_join() {
 }
 
 cmd_join() {
-    local results_dir="" output="" raw="" strict=0
+    local results_dir="" output="" raw="" strict=0 exclude_self=1 extra_ids=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -o|--output) output="$2"; shift 2 ;;
             --raw)       raw="$2"; shift 2 ;;
             --strict)    strict=1; shift ;;
+            --no-exclude-self) exclude_self=0; shift ;;
+            --exclude-id) extra_ids="${extra_ids} $(printf %s "$2" | tr "A-Z" "a-z")"; shift 2 ;;
             -h|--help)   usage; exit 0 ;;
             -*)          die "unknown option $1" ;;
             *)           [[ -n "${results_dir}" ]] && die "unexpected argument $1"
@@ -336,10 +401,111 @@ cmd_join() {
     [[ -f "${index_file}" ]] || die "no folddisco_queries.index.tsv in ${results_dir}"
 
     note "joining ${raw}"
-    do_join "${index_file}" "${raw}" "${output}" "${strict}"
+    local exclude_ids=""
+    if [[ ${exclude_self} -eq 1 ]]; then
+        exclude_ids="$(detect_self_id "${results_dir}")"
+        if [[ -n "${exclude_ids}" ]]; then
+            note "  self    excluding the scanned entry itself (${exclude_ids})"
+        fi
+    fi
+    exclude_ids="$(printf %s "${exclude_ids}${extra_ids}" | tr -s " ")"
+    do_join "${index_file}" "${raw}" "${output}" "${strict}" "${exclude_ids}"
     local n_hits
     n_hits="$(( $(grep -c '' "${output}") - 1 ))"
     note "wrote ${n_hits} hit rows to ${output}"
+}
+
+# ---------------------------------------------------------------------------
+# search-ensemble: one search per member, run concurrently
+#
+# Parallelism is by PROCESS, not by thread, and that is the whole point. The
+# installed build does not write stdout line-atomically, so -t > 1 tears rows
+# (see the note on threads). Separate processes each own their own output
+# file and cannot interleave, so this gets the throughput of many cores while
+# every member still runs at the -t 1 that was measured to be reproducible.
+#
+# It only parallelises when there is actually an ensemble to parallelise.
+# With fewer than two members it says so and runs the single search serially,
+# rather than paying setup cost and hiding output behind log files for no
+# reason.
+# ---------------------------------------------------------------------------
+
+cmd_search_ensemble() {
+    local ensemble_dir="" jobs=0
+    local -a fwd=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -j|--jobs)   jobs="$2"; shift 2 ;;
+            -h|--help)   usage; exit 0 ;;
+            --)          shift; fwd+=("$@"); break ;;
+            -*)          fwd+=("$1"); shift ;;
+            *)           if [[ -z "${ensemble_dir}" ]]; then ensemble_dir="$1"; else fwd+=("$1"); fi; shift ;;
+        esac
+    done
+
+    [[ -n "${ensemble_dir}" ]] || { usage; die "an ensemble directory is required"; }
+    [[ -d "${ensemble_dir}" ]] || die "not a directory: ${ensemble_dir}"
+
+    # A member is any run directory holding an unsearched query file.
+    local -a members=()
+    local d
+    for d in "${ensemble_dir}"/run_baseline "${ensemble_dir}"/run_[0-9][0-9]; do
+        [[ -f "${d}/folddisco_queries.tsv" ]] && members+=("${d}")
+    done
+
+    if [[ ${#members[@]} -eq 0 ]]; then
+        die "no run_* directories with a folddisco_queries.tsv in ${ensemble_dir}
+  Scan the members first (ibc-search scan ... -o ${ensemble_dir}/run_NN)."
+    fi
+
+    if [[ ${#members[@]} -lt 2 ]]; then
+        note "only ${#members[@]} member found: not an ensemble, running serially"
+        cmd_search "${members[0]}" ${fwd[@]+"${fwd[@]}"}
+        return $?
+    fi
+
+    # Each process is ~0.7 GB RSS and memory-maps the shared index, so the
+    # limit is cores rather than RAM; half the cores leaves the machine usable.
+    if [[ "${jobs}" -le 0 ]]; then
+        local cores
+        cores="$( (sysctl -n hw.physicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4) )"
+        jobs=$(( cores / 2 )); [[ ${jobs} -lt 1 ]] && jobs=1
+        [[ ${jobs} -gt 8 ]] && jobs=8
+    fi
+
+    note "ensemble: ${#members[@]} members, ${jobs} concurrent searches (each -t 1)"
+
+    local started=0 i=0
+    for d in "${members[@]}"; do
+        ( cmd_search "${d}" ${fwd[@]+"${fwd[@]}"} ) > "${d}/search.log" 2>&1 &
+        started=$(( started + 1 ))
+        i=$(( i + 1 ))
+        if [[ $(( i % jobs )) -eq 0 ]]; then wait; fi
+    done
+    wait
+
+    local failed=0
+    note ""
+    note "member                         queries  hit rows  self-excl"
+    for d in "${members[@]}"; do
+        local q h x
+        q="$(grep -o "queries searched: [0-9]* of [0-9]*" "${d}/search.log" | tail -1 | awk "{print \$3\"/\"\$5}" || true)"
+        h="$(grep -o "wrote [0-9]* hit rows" "${d}/search.log" | tail -1 | awk "{print \$2}" || true)"
+        x="$(grep -o "excluded [0-9]* self-hit" "${d}/search.log" | tail -1 | awk "{print \$2}" || true)"
+        if [[ -z "${h}" ]]; then
+            failed=$(( failed + 1 ))
+            note "$(printf "%-30s %-8s %s" "$(basename "${d}")" "${q:-?}" "FAILED - see ${d}/search.log")"
+        else
+            note "$(printf "%-30s %-8s %-9s %s" "$(basename "${d}")" "${q:-?}" "${h}" "${x:-0}")"
+        fi
+        grep -h "WARNING" "${d}/search.log" | sed "s/^/    /" >&2 || true
+    done
+
+    if [[ ${failed} -gt 0 ]]; then
+        die "${failed} of ${#members[@]} member searches failed"
+    fi
+    note ""
+    note "all ${started} members searched; compare with scripts/ensemble_compare.py ${ensemble_dir}"
 }
 
 # ---------------------------------------------------------------------------
@@ -348,6 +514,7 @@ cmd_join() {
 
 cmd_search() {
     local results_dir="" output="" keep_raw=0 strict=0
+    local exclude_self=1 extra_ids=""
     local -a passthrough=()
 
     while [[ $# -gt 0 ]]; do
@@ -360,6 +527,8 @@ cmd_search() {
             --no-top)           TOP=""; shift ;;
             --rmsd)             passthrough+=(--rmsd "$2"); shift 2 ;;
             --keep-raw)         keep_raw=1; shift ;;
+            --no-exclude-self)  exclude_self=0; shift ;;
+            --exclude-id)       extra_ids="${extra_ids} $(printf %s "$2" | tr "A-Z" "a-z")"; shift 2 ;;
             --strict)           strict=1; shift ;;
             -h|--help)          usage; exit 0 ;;
             --)                 shift; passthrough+=("$@"); break ;;
@@ -437,7 +606,15 @@ cmd_search() {
         ${passthrough[@]+"${passthrough[@]}"} \
         > "${raw}"
 
-    do_join "${index_file}" "${raw}" "${output}" "${strict}"
+    local exclude_ids=""
+    if [[ ${exclude_self} -eq 1 ]]; then
+        exclude_ids="$(detect_self_id "${results_dir}")"
+        if [[ -n "${exclude_ids}" ]]; then
+            note "  self    excluding the scanned entry itself (${exclude_ids})"
+        fi
+    fi
+    exclude_ids="$(printf %s "${exclude_ids}${extra_ids}" | tr -s " ")"
+    do_join "${index_file}" "${raw}" "${output}" "${strict}" "${exclude_ids}"
 
     local n_hits
     n_hits="$(( $(grep -c '' "${output}") - 1 ))"
@@ -459,6 +636,7 @@ case "${1:-}" in
     status)        shift; cmd_status "$@" ;;
     extract)       shift; cmd_extract "$@" ;;
     search)        shift; cmd_search "$@" ;;
+    search-ensemble) shift; cmd_search_ensemble "$@" ;;
     join)          shift; cmd_join "$@" ;;
     -h|--help|"")  usage; exit 0 ;;
     *)             usage; die "unknown command '$1'" ;;

@@ -12,6 +12,7 @@ tests/test_folddisco_live.py.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -36,13 +37,15 @@ def test_script_is_syntactically_valid():
     assert completed.returncode == 0, completed.stderr
 
 
-def _make_results_dir(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
+def _make_results_dir(
+    tmp_path: Path, rows: list[tuple[str, str]], structure_id: str | None = None
+) -> Path:
     """Write the two files a scan leaves behind that the script consumes.
 
     ``rows`` is a list of ``(patch_id, query_string)``.
     """
     results = tmp_path / "results"
-    results.mkdir()
+    results.mkdir(parents=True, exist_ok=True)
     (results / "folddisco_queries.tsv").write_text(
         "".join(f"/fake/structure.pdb\t{q}\n" for _, q in rows), encoding="utf-8"
     )
@@ -55,6 +58,10 @@ def _make_results_dir(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
     (results / "folddisco_queries.index.tsv").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
+    if structure_id is not None:
+        (results / "run_manifest.json").write_text(
+            json.dumps({"input": {"structure_id": structure_id}}), encoding="utf-8"
+        )
     return results
 
 
@@ -267,3 +274,122 @@ def test_join_runs_standalone_on_an_existing_raw_file(
     assert completed.returncode == 0, completed.stderr
     row = (results / "folddisco_hits.tsv").read_text().strip().split("\n")[1]
     assert row.startswith("P_a\t")
+
+
+# --- self-hit exclusion ---------------------------------------------------
+
+SELF_HEADER = "tid\tidf\trmsd\tnode_count\tquery_residues\tmatching_residues"
+
+
+def _self_output() -> str:
+    """Canned output mixing the scanned entry with two other structures."""
+    return (
+        f"{SELF_HEADER}\n"
+        "pdb/n7/pdb2n74.ent.gz\t9.9\t0.00\t3\tA1,A2,A3\tA1,A2,A3\n"
+        "pdb/ab/pdb1abc.ent.gz\t5.0\t0.21\t3\tA1,A2,A3\tB7,B8,B9\n"
+        "pdb/cd/pdb9xyz.ent.gz\t4.0\t0.33\t2\tA1,A2,A3\tC1,_,C3\n"
+    )
+
+
+def test_self_hits_are_excluded_by_default(tmp_path: Path, index_file: Path):
+    """Searching a deposited entry against the whole PDB finds it matching itself.
+
+    Those rows are real but circular: on 2N74 the entry was its own top hit
+    for 56 of 87 motifs.
+    """
+    results = _make_results_dir(tmp_path, [("P_a", "A1,A2,A3")], structure_id="2N74")
+    completed = _run(results, index_file, _stub_folddisco(tmp_path, _self_output()))
+    assert completed.returncode == 0, completed.stderr
+
+    body = (results / "folddisco_hits.tsv").read_text()
+    assert "pdb2n74" not in body, "the entry itself must not remain in the hits"
+    assert "pdb1abc" in body and "pdb9xyz" in body, "other structures must survive"
+    assert "excluded 1 self-hit" in completed.stderr
+    # Excluded rows are auditable, not silently dropped.
+    side = results / "folddisco_hits.selfhits.tsv"
+    assert side.is_file() and "pdb2n74" in side.read_text()
+
+
+def test_no_exclude_self_keeps_them(tmp_path: Path, index_file: Path):
+    results = _make_results_dir(tmp_path, [("P_a", "A1,A2,A3")], structure_id="2N74")
+    completed = _run(
+        results, index_file, _stub_folddisco(tmp_path, _self_output()),
+        "--no-exclude-self",
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "pdb2n74" in (results / "folddisco_hits.tsv").read_text()
+
+
+def test_exclude_id_drops_additional_entries(tmp_path: Path, index_file: Path):
+    """Homologues cannot be inferred from an entry ID, so they are opt-in."""
+    results = _make_results_dir(tmp_path, [("P_a", "A1,A2,A3")], structure_id="2N74")
+    completed = _run(
+        results, index_file, _stub_folddisco(tmp_path, _self_output()),
+        "--exclude-id", "1ABC",
+    )
+    assert completed.returncode == 0, completed.stderr
+    body = (results / "folddisco_hits.tsv").read_text()
+    assert "pdb2n74" not in body and "pdb1abc" not in body
+    assert "pdb9xyz" in body
+
+
+def test_a_non_entry_structure_id_excludes_nothing(tmp_path: Path, index_file: Path):
+    """A design or local model is not a deposited entry; nothing is guessed."""
+    results = _make_results_dir(
+        tmp_path, [("P_a", "A1,A2,A3")], structure_id="member_01"
+    )
+    completed = _run(results, index_file, _stub_folddisco(tmp_path, _self_output()))
+    assert completed.returncode == 0, completed.stderr
+    assert "pdb2n74" in (results / "folddisco_hits.tsv").read_text()
+    assert "excluded" not in completed.stderr
+
+
+# --- parallel ensemble ----------------------------------------------------
+
+
+def _ensemble(tmp_path: Path, n: int) -> Path:
+    root = tmp_path / "ens"
+    root.mkdir()
+    for i in range(1, n + 1):
+        d = _make_results_dir(tmp_path / f"m{i}", [(f"P{i}", "A1,A2,A3")])
+        d.rename(root / f"run_{i:02d}")
+    return root
+
+
+def test_search_ensemble_runs_every_member(tmp_path: Path, index_file: Path):
+    root = _ensemble(tmp_path, 3)
+    env = _stub_folddisco(tmp_path, _self_output())
+    completed = subprocess.run(
+        [str(SCRIPT), "search-ensemble", str(root), "-i", str(index_file), "-j", "3"],
+        capture_output=True, text=True, env=env,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "3 members" in completed.stderr
+    for i in (1, 2, 3):
+        assert (root / f"run_{i:02d}" / "folddisco_hits.tsv").is_file()
+
+
+def test_search_ensemble_declines_to_parallelise_a_single_run(
+    tmp_path: Path, index_file: Path
+):
+    """Parallelism is gated on actually finding an ensemble."""
+    root = _ensemble(tmp_path, 1)
+    env = _stub_folddisco(tmp_path, _self_output())
+    completed = subprocess.run(
+        [str(SCRIPT), "search-ensemble", str(root), "-i", str(index_file)],
+        capture_output=True, text=True, env=env,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "not an ensemble" in completed.stderr
+    assert (root / "run_01" / "folddisco_hits.tsv").is_file()
+
+
+def test_search_ensemble_needs_scanned_members(tmp_path: Path, index_file: Path):
+    empty = tmp_path / "nothing"
+    empty.mkdir()
+    completed = subprocess.run(
+        [str(SCRIPT), "search-ensemble", str(empty), "-i", str(index_file)],
+        capture_output=True, text=True,
+    )
+    assert completed.returncode == 2
+    assert "no run_* directories" in completed.stderr
