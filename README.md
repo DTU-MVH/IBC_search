@@ -25,8 +25,12 @@ response, or T-cell peptide presentation. These are six distinct,
 non-interchangeable things and the code, column names and documentation keep
 them apart.
 
-**No FoldDisco search is run here.** Searching, reference indexes, epitope
-labels, features, scoring and benchmarking are later stages; see
+**The `scan` command runs no FoldDisco search.** It stops at emitting
+queries. Running them is a separate, explicit step —
+`ibc-search folddisco-search`, which delegates to
+[`scripts/folddisco_search.sh`](scripts/folddisco_search.sh) and leaves the
+searching to the FoldDisco binary. Epitope labels, features, scoring and
+benchmarking remain later stages; see
 [`src/ibc_search/ext/`](src/ibc_search/ext/) for documented extension points
 and [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §5 for what blocks them.
 
@@ -77,9 +81,19 @@ PYTHONPATH=src .venv/bin/python -m ibc_search scan \
 
 ### Scan a PDB entry ID (fetched from RCSB and cached)
 
+Either spelling works — the legacy 4-character ID, or the extended
+`pdb_XXXXXXXX` form the PDB is migrating to:
+
 ```bash
 PYTHONPATH=src .venv/bin/python -m ibc_search scan 1CRN -o results/1crn
+PYTHONPATH=src .venv/bin/python -m ibc_search scan pdb_00001crn -o results/1crn
 ```
+
+Both resolve to the same download, cache entry and patch IDs (verified: the
+two URLs serve byte-identical content). RCSB serves **no legacy PDB-format
+file** for an entry outside the 4-character space, so with
+`[input].fetch_format = "pdb"` such an entry is refused with a clear message;
+the mmCIF default is unaffected.
 
 mmCIF is preferred for fetched entries. The URL, UTC date and SHA-256 are
 recorded in the run manifest. If the network is unavailable the run fails with
@@ -114,6 +128,70 @@ PYTHONPATH=src .venv/bin/python -m ibc_search folddisco-info
 `folddisco-info` reports the installed FoldDisco build and whether it still
 matches the build the query contract was verified against. It runs no search.
 
+### Run FoldDisco on the results
+
+Searching is a separate step, performed by the FoldDisco binary itself. The
+pipeline is `scan` → `folddisco-search`:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m ibc_search scan 8YHU -o results/8yhu
+PYTHONPATH=src .venv/bin/python -m ibc_search folddisco-search results/8yhu
+```
+
+That writes `results/8yhu/folddisco_hits.tsv`, which is FoldDisco's per-match
+output with each row joined back to the `patch_id` that produced it.
+
+The same thing from a plain shell, which is where the logic actually lives:
+
+```bash
+./scripts/folddisco_search.sh status                       # what is installed
+./scripts/folddisco_search.sh extract                      # unpack the index (slow)
+./scripts/folddisco_search.sh search results/8yhu
+./scripts/folddisco_search.sh search results/8yhu -- --top 10 --rmsd 1.5
+```
+
+Anything after `--` goes straight to `folddisco query`.
+
+> **The database needs unpacking first.** `../folddisco_databases/` holds the
+> whole-PDB FoldDisco index as a single 65.7 GiB `pdb_folddisco.tar.lz4`.
+> Until `extract` is run there is nothing to search, and the script says so
+> rather than failing obscurely.
+>
+> Unpacked it is **66.31 GiB on disk** (65.87 GiB logical) in 230 659 files:
+> an 18.7 GiB index table plus ~47 GiB of `index/pdb/**/pdb*.ent.gz`
+> structure files. lz4 buys almost nothing here, so the unpack is barely
+> larger than the archive, and keeping both needs ~132 GiB. Decompressing the
+> full archive measured 19 s, so extraction costs minutes, not hours — it is
+> bound by writing 66 GiB and creating 230k files.
+
+> **Results are capped at the top 1000 structures per query, deliberately.**
+> Measured against the extracted whole-PDB index (230 655 structures), one
+> 3-residue query took 0.18 s at `--top 10`, 0.41 s at `--top 100`, 4.2 s at
+> `--top 1000`, and produced **no output in 15 minutes uncapped**. The hash
+> lookup is fast; the match stage loads and superposes every candidate, and a
+> short motif matches much of the PDB. Without the cap the search does not
+> finish.
+>
+> Treat `[folddisco].search_top` as a **retrieval cutoff, not a speed knob**:
+> a true match ranked below it is never reported, and on a real scan the cap
+> saturates — every query returned exactly 1000 rows, so all of them were
+> truncated. How retrieval quality varies with this value is uncharacterised
+> and belongs in the sensitivity study. `--no-top` removes it if you can
+> afford the runtime.
+
+> **Threads default to 1, deliberately.** The installed build does not write
+> stdout line-atomically: at `-t 10`, 0–4 of ~1225 hit rows came back torn by
+> interleaved writes, differing between otherwise identical runs, while `-t 1`
+> was byte-identical across repeats. Torn rows are quarantined in
+> `folddisco_hits.malformed.tsv` and dropped rather than parsed, and
+> `--strict` makes them fatal. See
+> [`docs/FOLDDISCO_CONTRACT.md`](docs/FOLDDISCO_CONTRACT.md).
+
+A hit means a geometrically similar motif exists in a deposited structure. It
+is not evidence of antigenicity: the PDB is a structural background, not a
+collection of known epitopes, and `[folddisco].epitope_reference_index_path`
+is still empty and still marked `blocked`.
+
 ### Tests
 
 ```bash
@@ -141,6 +219,13 @@ automatically if `folddisco` is not on `PATH`.
 | `folddisco_queries.tsv` | the handoff: `<structure_path>\t<tokens>` lines, the format verified against the installed FoldDisco build |
 | `folddisco_queries.index.tsv` | maps each query line back to its `patch_id` (the query format has no field for one) |
 | `run_manifest.json` | versions, exact command, input provenance + hashes, fully resolved config, seed, warnings, per-stage timings |
+
+`folddisco-search` adds two more to the same directory:
+
+| file | contents |
+|---|---|
+| `folddisco_hits.tsv` | FoldDisco's per-match rows, each prefixed with the `patch_id`, radius and scale it came from |
+| `folddisco_hits.malformed.tsv` | written **only** if the build tore output rows; quarantined, never parsed |
 
 `[run].table_format = "parquet"` writes Parquet instead of TSV (needs
 `pyarrow`).
@@ -219,7 +304,7 @@ a run is reproducible from its own output.
 ## Performance
 
 Measured on this machine (Apple Silicon, arm64, Python 3.14.2), median of 3
-runs, all four default radii (`[5, 6.5, 8, 10] Å`), single process:
+runs, all four default radii (`[4, 5, 6, 7] Å`), single process:
 
 | structure | residues | heavy atoms | seeds | patches | parse | SASA | ball search | **total** |
 |---|---|---|---|---|---|---|---|---|

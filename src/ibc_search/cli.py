@@ -14,12 +14,21 @@ Commands
 ``folddisco-info``
     Report what is known about the installed FoldDisco build and the verified
     query contract. Runs no search.
+
+``folddisco-search``
+    Run FoldDisco over a finished scan's queries and join the hits back to
+    their patches. This is a thin delegation to
+    ``scripts/folddisco_search.sh``: the search itself is still performed by
+    the FoldDisco binary, not reimplemented here, so the invocation has one
+    definition that is equally usable from a plain shell.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -63,13 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan = sub.add_parser(
         "scan",
-        help="scan one structure from a file path or a 4-character PDB entry ID",
+        help="scan one structure from a file path or a PDB entry ID (4-character or extended)",
     )
     scan.add_argument(
         "input",
         help=(
             "path to a .pdb/.ent/.cif/.mmcif file (optionally .gz), or a "
-            "4-character PDB entry ID such as 4CHA"
+            "PDB entry ID in either form: 4-character (4CHA) or extended "
+            "(pdb_00004cha)"
         ),
     )
     scan.add_argument(
@@ -124,6 +134,66 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "folddisco-info",
         help="report the installed FoldDisco build and the verified query contract",
+    )
+
+    search = sub.add_parser(
+        "folddisco-search",
+        help=(
+            "run FoldDisco over a finished scan's queries (delegates to "
+            "scripts/folddisco_search.sh)"
+        ),
+        description=(
+            "Hand a results directory to the real FoldDisco binary and join "
+            "the hits back to the patches that produced them. This does not "
+            "implement a search in Python: it invokes the documented tool via "
+            "scripts/folddisco_search.sh, so there is exactly one "
+            "implementation of the invocation. A hit is a geometric motif "
+            "match and establishes nothing about antigenicity."
+        ),
+    )
+    search.add_argument(
+        "results_dir",
+        help="a directory written by `ibc-search scan` (holds folddisco_queries.tsv)",
+    )
+    search.add_argument("-c", "--config", type=Path, default=None)
+    search.add_argument(
+        "-i", "--index", default=None,
+        help="index table to search (default: [folddisco].reference_index_path)",
+    )
+    search.add_argument(
+        "-t", "--threads", type=int, default=None,
+        help=(
+            "FoldDisco threads (default: [folddisco].search_threads = 1). "
+            "Above 1 this build tears output rows; see the script's --help"
+        ),
+    )
+    search.add_argument(
+        "-o", "--output", default=None,
+        help="hits file (default: <results_dir>/folddisco_hits.tsv)",
+    )
+    search.add_argument(
+        "--top", type=int, default=None,
+        help=(
+            "keep the top N structures per query by IDF, before matching "
+            "(default: [folddisco].search_top). A retrieval cutoff, and what "
+            "makes a whole-PDB search terminate"
+        ),
+    )
+    search.add_argument(
+        "--no-top", action="store_true",
+        help="remove the cap; expect a whole-PDB search to run for hours",
+    )
+    search.add_argument(
+        "--strict", action="store_true",
+        help="fail if FoldDisco emitted any torn row",
+    )
+    search.add_argument(
+        "--keep-raw", action="store_true",
+        help="keep the unjoined FoldDisco output",
+    )
+    search.add_argument(
+        "extra", nargs="*", default=[],
+        help="after `--`, arguments passed straight to `folddisco query`",
     )
     return parser
 
@@ -208,8 +278,14 @@ def cmd_scan(args: argparse.Namespace, argv: list[str]) -> int:
 
     out_dir = Path(config["run"]["output_dir"])
     t0 = time.perf_counter()
+    # write_tables can append warnings of its own -- notably that the
+    # FoldDisco query format cannot carry a model number -- so anything added
+    # here is logged too, rather than only reaching the manifest.
+    warnings_before = len(result.warnings)
     paths = write_tables(out_dir, parsed, exposure, result, config)
     timings["write_tables_s"] = time.perf_counter() - t0
+    for warning in result.warnings[warnings_before:]:
+        logger.warning("%s", warning)
 
     manifest = build_manifest(
         command=argv,
@@ -269,6 +345,71 @@ def cmd_folddisco_info() -> int:
     return 0
 
 
+def _search_script() -> Path:
+    """Locate scripts/folddisco_search.sh.
+
+    The script lives beside the package rather than inside it, because it is
+    also meant to be run on its own from a shell. ``$IBC_FOLDDISCO_SCRIPT``
+    overrides the lookup for an installed (non-source-tree) layout.
+    """
+    override = os.environ.get("IBC_FOLDDISCO_SCRIPT")
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            raise IbcSearchError(
+                f"IBC_FOLDDISCO_SCRIPT points at {path}, which is not a file"
+            )
+        return path
+    path = Path(__file__).resolve().parents[2] / "scripts" / "folddisco_search.sh"
+    if not path.is_file():
+        raise IbcSearchError(
+            f"could not find the search script at {path}. Set "
+            "IBC_FOLDDISCO_SCRIPT to its location, or run it directly."
+        )
+    return path
+
+
+def cmd_folddisco_search(args: argparse.Namespace) -> int:
+    """Delegate to the shell script. No search is implemented in Python.
+
+    Config supplies the defaults; an explicit flag always wins, matching how
+    ``scan`` resolves its own options.
+    """
+    config = load_config(args.config)
+    fd = config["folddisco"]
+
+    index = args.index or fd.get("reference_index_path") or ""
+    threads = args.threads if args.threads is not None else fd.get("search_threads", 1)
+
+    cmd: list[str] = [str(_search_script()), "search", args.results_dir]
+    if index:
+        cmd += ["-i", str(index)]
+    cmd += ["-t", str(threads)]
+    if args.output:
+        cmd += ["-o", args.output]
+    if fd.get("search_format_output"):
+        cmd += ["--format-output", str(fd["search_format_output"])]
+    if args.no_top:
+        cmd.append("--no-top")
+    else:
+        top = args.top if args.top is not None else fd.get("search_top")
+        if top:
+            cmd += ["--top", str(top)]
+    if args.strict:
+        cmd.append("--strict")
+    if args.keep_raw:
+        cmd.append("--keep-raw")
+
+    # argparse.REMAINDER keeps the literal `--`; the script expects it.
+    extra = list(args.extra or [])
+    if extra and extra[0] != "--":
+        extra = ["--", *extra]
+    cmd += extra
+
+    completed = subprocess.run(cmd, check=False)  # noqa: S603 - argv, no shell
+    return completed.returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     full_command = ["ibc-search", *raw]
@@ -281,6 +422,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_show_config(args)
         if args.command == "folddisco-info":
             return cmd_folddisco_info()
+        if args.command == "folddisco-search":
+            return cmd_folddisco_search(args)
     except IbcSearchError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

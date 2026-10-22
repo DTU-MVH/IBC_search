@@ -373,3 +373,39 @@ def test_cli_output_is_invariant_under_rigid_motion(hairpin_pdb, tmp_path):
         ]
 
     assert queries(out_a) == queries(out_b)
+
+
+def test_multi_model_input_warns_that_the_query_file_loses_the_model(
+    multi_model_pdb, tmp_path, base_config
+):
+    """The query format has no model field, so a search would use model 1.
+
+    Verified against the real binary: 16 runs over the 16 models of an NMR
+    ensemble, every query file pointing at the one deposited file, returned
+    byte-identical RMSDs -- all 16 had silently searched model 1. Scanning a
+    multi-model file must say so, or a downstream search is wrong in a way
+    nothing in the output reveals.
+    """
+    out = tmp_path / "out"
+    rc = main([
+        "scan", str(multi_model_pdb), "--model", "2",
+        "-o", str(out), "--log-level", "ERROR",
+    ])
+    assert rc == 0
+
+    manifest = json.loads((out / "run_manifest.json").read_text())
+    warnings = " ".join(w["message"] for w in manifest.get("warnings", []))
+    assert "no field for a model number" in warnings, warnings
+    assert "FIRST model" in warnings
+
+
+def test_single_model_input_does_not_warn_about_models(
+    linear_chain_pdb, tmp_path, base_config
+):
+    out = tmp_path / "out"
+    assert main([
+        "scan", str(linear_chain_pdb), "-o", str(out), "--log-level", "ERROR",
+    ]) == 0
+    manifest = json.loads((out / "run_manifest.json").read_text())
+    warnings = " ".join(w["message"] for w in manifest.get("warnings", []))
+    assert "model number" not in warnings

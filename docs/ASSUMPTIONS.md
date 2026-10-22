@@ -34,12 +34,33 @@ Divergences from the brief, and why:
 
 ## 1. Input handling
 
-**A-1.1** A 4-character token is treated as a PDB entry ID only if it matches
-`^[0-9][A-Za-z0-9]{3}$` **and** no file of that name exists. A local file
-always wins. Status: **proposed**.
+**A-1.1** A token is treated as a PDB entry ID only if it matches either the
+legacy form `^[0-9][A-Za-z0-9]{3}$` or the extended form
+`^pdb_[0-9A-Za-z]{8}$` (case-insensitive) **and** no file of that name
+exists. A local file always wins. Status: **proposed**.
 *Consequence:* a 4-letter name not starting with a digit is never read as an
-entry ID. Extended 8-character identifiers (`pdb_0000xxxx`) are rejected with
-an explicit message rather than guessed at.
+entry ID, so a four-letter filename cannot trigger a download.
+
+**Both spellings are supported**, because the four-character space is close
+to exhausted and the PDB is migrating to extended identifiers. Verified
+against RCSB: `4HHB.cif.gz` and `pdb_00004hhb.cif.gz` decompress to
+byte-identical content. An extended ID of the form `pdb_0000XXXX` therefore
+canonicalises to its legacy `XXXX` equivalent for fetching, so either
+spelling gives one URL, one cache entry, one SHA-256 and identical patch
+IDs. An entry genuinely outside the four-character space keeps its extended
+ID throughout.
+
+*Format limitation, verified:* `pdb_00004hhb.pdb.gz` returns HTTP 404 while
+the `.cif.gz` is served — the legacy PDB format cannot express an identifier
+outside the four-character space, which is why extended IDs exist at all.
+With `[input].fetch_format = "pdb"`, an entry having no legacy equivalent is
+refused up front with a message naming mmCIF, rather than failing later on an
+opaque 404. The default is mmCIF, so this does not arise by default.
+
+*Not live-verified:* the genuinely-extended path (an ID **not** of the form
+`pdb_0000XXXX`) is unit-tested but has never been exercised against a real
+download, because the PDB has not yet issued such an entry. The parsing,
+canonicalisation and format refusal are tested; the HTTP round trip is not.
 
 **A-1.2** Fetched entries are retrieved as mmCIF (`.cif.gz`) from
 `https://files.rcsb.org/download/<ID>.cif.gz`, with URL, UTC date, SHA-256 and
@@ -180,11 +201,11 @@ specific atom and its distance are recorded per member. All atoms of selected
 residues remain available downstream (tested): a motif is a set of residues,
 not a set of CB atoms. Status: **documented**.
 
-**A-3.7 Ball radii** `[5, 6.5, 8, 10] Å`. **Engineering candidates for a
+**A-3.7 Ball radii** `[4, 5, 6, 7] Å`. **Engineering candidates for a
 sensitivity study, not literature-derived optima.** Status: **proposed**.
 This is parameter (3) of four kept-separate radii.
 
-**Revision history**, both steps driven by A-3.7b (below):
+**Revision history**, the first two steps driven by A-3.7b (below):
 
 1. The set was originally `[5, 8, 10, 12, 15] Å`. **15 Å was dropped and
    6.5 Å was added**, after A-3.7b showed 15 Å captured a majority of a real
@@ -196,33 +217,49 @@ This is parameter (3) of four kept-separate radii.
    15 Å, just less extreme. With it gone, every radius in the default set
    stays under 30% of the 56-residue chain even at its largest observed
    patch (see A-3.7b).
+3. **8 Å and 10 Å were dropped and 4 Å and 6 Å added**, giving the current
+   `[4, 5, 6, 7] Å`. Unlike steps 1 and 2 this was **not** forced by a
+   saturation measurement — both 8 Å and 10 Å stayed under the 30% threshold
+   that disqualified 12 Å and 15 Å. It is a deliberate narrowing of the grid
+   onto the submotif scale, trading coverage of the intermediate scale for
+   four closely spaced points between 4 and 7 Å. The intermediate scale is
+   consequently **no longer sampled at all** by the defaults, which is a
+   limitation of any sensitivity study run on this set: it can resolve
+   behaviour within the submotif range but says nothing above 7 Å.
 
-Neither change is reflected in old output directories from earlier in this
-project (`results/8yhu_binder*`, produced under the five-radius set with
-15 Å and then with 12 Å); re-run `scan` to get output under the current set.
+None of these changes is reflected in old output directories from earlier in
+this project (`results/8yhu*`, produced under previous radius sets); re-run
+`scan` to get output under the current set.
 
-Measured patch sizes (4CHA chains A/B/C, `cb` mode, defaults):
+Measured patch sizes (4CHA chains A/B/C, `cb` mode, defaults), re-measured
+when the set changed. The method was validated by reproducing the previous
+set's figures exactly before the new ones were taken:
 
 | radius | min | median | max |
 |---|---|---|---|
+| 4 Å | 3 | 4 | 5 |
 | 5 Å | 3 | 4 | 8 |
-| 6.5 Å | 3 | 6 | 11 |
-| 8 Å | 5 | 9 | 16 |
-| 10 Å | 8 | 14 | 23 |
+| 6 Å | 3 | 6 | 10 |
+| 7 Å | 5 | 7 | 13 |
 
-Consistent with the notes' orientation that a 5 Å ball captures a submotif
-(median 4 residues, against a 2–4 residue "small local interaction motif"
-prior) rather than a whole epitope. A 10 Å ball happens to give a median of 14
-residues against a ~15-residue whole-epitope prior — **a size coincidence
-only**, and not evidence that a 10 Å ball recovers epitopes.
+For reference, the radii dropped in step 3 gave 8 Å: 5/9/16 and 10 Å: 8/14/23
+on the same chains.
+
+Every radius in the current set now sits inside or just above the 2–4 residue
+"small local interaction motif" prior (medians 4–7 residues). The set no
+longer contains anything approaching the ~15-residue whole-epitope prior —
+the 10 Å ball that coincidentally matched it (median 14) is gone. That
+coincidence was never evidence that a 10 Å ball recovers epitopes, and its
+removal costs nothing in that respect.
 
 Note that these sizes were measured on a 238-residue chain. They do **not**
 transfer to a minibinder-sized input: see A-3.7b.
 
 **A-3.7b The upper radii saturate on minibinder-sized inputs — this is why
 15 Å and then 12 Å were dropped from the defaults.** Status: **verified**
-(measured); this finding is the direct cause of both A-3.7 revisions, not
-merely a limitation alongside them.
+(measured); this finding is the direct cause of A-3.7 revisions 1 and 2. It
+is *not* the reason for revision 3, which narrowed the set to 4–7 Å by
+choice rather than under measured pressure.
 
 The original radius set was chosen as a generic exploration grid and measured
 on 4CHA, a 238-residue chain. On a real minibinder it behaved very
@@ -236,15 +273,22 @@ Under the **current** radius set:
 
 | radius | median patch | as fraction of the 56-residue chain | max patch |
 |---|---|---|---|
+| 4 Å | 4 res | 7% | 6 res (11%) |
 | 5 Å | 5 res | 9% | 7 res (12%) |
-| 6.5 Å | 8 res | 14% | 10 res (18%) |
-| 8 Å | 10 res | 18% | 17 res (30%) |
-| 10 Å | 15 res | 27% | 25 res (45%) |
+| 6 Å | 7 res | 12% | 10 res (18%) |
+| 7 Å | 9 res | 16% | 12 res (21%) |
+
+The current set stays local on a minibinder by a wide margin: the largest
+patch any default radius produces covers 21% of the chain, against the 30%
+figure that the now-dropped 8 Å reached and the 55%/84% that disqualified
+12 Å and 15 Å.
 
 Under **earlier** radius sets, the same structure's larger balls gave:
 
 | radius | median patch | as fraction of the 56-residue chain | max patch | status |
 |---|---|---|---|---|
+| 8 Å | 10 res | 18% | 17 res (30%) | dropped (step 3) |
+| 10 Å | 15 res | 27% | 25 res (45%) | dropped (step 3) |
 | 12 Å | 20 res | 36% | 31 res (55%) | dropped (step 2) |
 | 15 Å | **32 res** | **57%** | **47 res (84%)** | dropped (step 1) |
 
@@ -437,6 +481,6 @@ described as epitope-scale.
 | **B-5** | negative/background set | Without a baseline, no hit count is interpretable. |
 | **B-6** | redundancy control for references | Antibody–antigen data is heavily redundant; un-deduplicated references inflate any frequency statistic. |
 | **B-7** | labelled evaluation set + positive-class definition | Needed before any benchmark number means anything. |
-| **B-8** | which radius/radii to use in production | Requires the sensitivity study the radii set was chosen to enable. Partially informed by A-3.7b: 12 Å and 15 Å were both found non-local on a 56-residue binder and have been dropped from the default set, which now spans 5–10 Å. Still open: which of 5/6.5/8/10 Å (or a value in between) to use in production, and whether a size-relative rule (radius vs. the chain's radius of gyration, or fixing patch size instead of radius) should replace a fixed radius altogether. |
+| **B-8** | which radius/radii to use in production | Requires the sensitivity study the radii set was chosen to enable. Partially informed by A-3.7b: 12 Å and 15 Å were both found non-local on a 56-residue binder and were dropped. The set was then narrowed again, by choice rather than measurement, to 4–7 Å (A-3.7 step 3), so the defaults now sample only the submotif scale and nothing above 7 Å. Still open: which of 4/5/6/7 Å (or a value in between) to use in production; whether dropping the intermediate scale entirely was right, since no default radius now tests it; and whether a size-relative rule (radius vs. the chain's radius of gyration, or fixing patch size instead of radius) should replace a fixed radius altogether. |
 | **B-9** | a set of the project's own minibinder designs | Partially resolved: PDB **8YHU** (hTLR3/minibinder 8.6, author chain B, 56 residues) has been run end to end and is a genuine minibinder, alongside the reference structures 4CHA, 1CRN, 6M0J and 3HFM. Still outstanding: the project's actual de novo designs, and any binder supplied as a prediction rather than a crystal structure. |
 | **B-10** | which conformational state to scan | 8YHU chain B is the TLR3-**bound** conformation, and its free-state surface may differ. Whether to scan complexed structures, free structures, or a predicted/ensemble model is undecided (see L-4, L-5 and A-2.6). |

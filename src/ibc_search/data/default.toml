@@ -85,10 +85,10 @@ include_hetero_as_occluder = false  # unit: bool   | provenance: this impl | sta
 # kept-separate radii. These are ENGINEERING CANDIDATES for a later
 # sensitivity study, not literature-derived optima. Project notes suggest a
 # 5 A ball captures a submotif rather than a whole epitope.
-radii_angstrom = [5.0, 6.5, 8.0, 10.0]  # unit: A | provenance: this impl | status: proposed
+radii_angstrom = [4.0, 5.0, 6.0, 7.0]  # unit: A | provenance: this impl | status: proposed
 # Human-readable scale label per radius, carried into outputs. Purely
 # descriptive bookkeeping; it asserts nothing about epitope size.
-scale_labels = { "5.0" = "submotif", "6.5" = "submotif", "8.0" = "submotif", "10.0" = "intermediate" }
+scale_labels = { "4.0" = "submotif", "5.0" = "submotif", "6.0" = "submotif", "7.0" = "submotif" }
 # Ball-center representation: "cb" (C-beta atom) or
 # "sidechain_centroid" (centroid of side-chain heavy atoms).
 center_mode = "cb"              # unit: enum       | provenance: this impl | status: proposed
@@ -112,17 +112,16 @@ min_patch_size = 3              # unit: residues   | provenance: verified vs ins
 # Chosen from two measurements rather than by guess:
 #  (a) a 30-residue query runs on the installed build in ~0.02 s against a
 #      single-structure index, so query length is not a tight tool limit;
-#  (b) on 4CHA chains A/B/C the observed patch sizes were
-#      r=5: 3-8, r=6.5: 3-11, r=8: 5-16, r=10: 8-23, r=12: 12-32 residues.
-# 60 therefore keeps every radius in the exploration set emittable, with
-# headroom to spare (max observed is 32, against a 60 cap). It was originally
-# sized to also cover a 15 A radius (observed max 55) that has since been
-# dropped from the default set -- see [ball_search].radii_angstrom and
-# docs/ASSUMPTIONS.md A-3.7b -- so the cap is now looser than it needs to be,
-# but it is left at 60 rather than retightened: it is an engineering ceiling,
-# NOT a sensitivity limit, and how FoldDisco's retrieval quality varies with
-# query length is uncharacterised and is exactly what the later sensitivity
-# study must measure.
+#  (b) on 4CHA chains A/B/C the observed patch sizes under the CURRENT set are
+#      r=4: 3-5, r=5: 3-8, r=6: 3-10, r=7: 5-13 residues (re-measured when the
+#      set changed from [5, 6.5, 8, 10]; the dropped radii gave r=8: 5-16,
+#      r=10: 8-23, r=12: 12-32, r=15: up to 55).
+# 60 is therefore far looser than the current set needs -- the largest patch
+# any default radius now produces is 13 residues, against a 60 cap. It is left
+# at 60 rather than retightened: it is an engineering ceiling, NOT a
+# sensitivity limit, and how FoldDisco's retrieval quality varies with query
+# length is uncharacterised and is exactly what the later sensitivity study
+# must measure. Retightening it would silently become such a limit.
 max_patch_size = 60             # unit: residues   | provenance: measured, see docs/ASSUMPTIONS.md | status: proposed
 # Restrict patch members to the scanned chains. False lets a patch span
 # chains, which for a multi-chain input mixes surfaces that are not a single
@@ -188,6 +187,41 @@ emit_query_file = true          # unit: bool       | provenance: verified vs ins
 # used by ball_search_algo.
 distance_threshold_angstrom = 0.5   # unit: A      | provenance: installed FoldDisco default | status: documented
 angle_threshold_degrees = 5.0       # unit: deg    | provenance: installed FoldDisco default | status: documented
-# Reference index to search. No curated B-cell-epitope / antibody-antigen
-# reference collection has been built or chosen yet.
-reference_index_path = ""       # unit: path       | provenance: not yet decided | status: blocked
+# Index that `scripts/folddisco_search.sh` searches by default: the whole-PDB
+# FoldDisco index published at opendata.mmseqs.org and downloaded to
+# ../folddisco_databases. Empty means "let the script use its own default".
+#
+# NOTE what this is and is not. It is the complete PDB, which makes it a
+# general structural-similarity background, NOT a reference collection of
+# known epitopes. No curated B-cell-epitope / antibody-antigen reference set
+# has been built or chosen; that decision is still open and still blocks any
+# epitope-level interpretation of a hit. Searching the PDB tells you which
+# deposited structures carry a geometrically similar motif. It does not tell
+# you that the motif is antigenic.
+reference_index_path = ""       # unit: path       | provenance: this impl | status: proposed
+# Threads passed to `folddisco query`. Deliberately 1: the installed build
+# does not write stdout line-atomically, and at -t 10 roughly 0.5% of hit rows
+# came back torn by interleaved writes, varying between otherwise identical
+# runs, while -t 1 was byte-identical across repeats. Measured, not assumed.
+search_threads = 1              # unit: count      | provenance: measured on this machine | status: verified
+# Per-match columns requested from `folddisco query --format-output`.
+# query_residues is mandatory: it is the exact echo of the emitted tokens and
+# is the key that joins a hit row back to its patch_id.
+search_format_output = "tid,idf,rmsd,node_count,query_residues,matching_residues"  # unit: keys | provenance: verified vs installed FoldDisco | status: verified
+# Keep only the top N structures per query, by IDF, before the match stage.
+# Required for a whole-PDB search to terminate at all. Measured on the
+# 230655-structure index, one 3-residue query: 0.18 s at --top 10, 0.41 s at
+# 100, 4.19 s at 1000, and NO output after 15 minutes uncapped. The hash
+# lookup is fast; the match stage superposes every candidate, and a short
+# motif matches much of the PDB.
+#
+# This is a RETRIEVAL CUTOFF, not a neutral performance knob: a true match
+# ranked below N is never reported, and how retrieval quality varies with
+# this value is uncharacterised. It must be part of any sensitivity study.
+search_top = 1000               # unit: structures | provenance: measured on this machine | status: proposed
+# A curated B-cell-epitope / antibody-antigen reference collection. STILL NOT
+# CHOSEN, and deliberately a separate key from reference_index_path above:
+# searching the whole PDB gives a structural-similarity background, which is
+# not the same question as "does this motif resemble a known epitope". Until
+# something is named here, no hit can be read as evidence of antigenicity.
+epitope_reference_index_path = ""  # unit: path    | provenance: not yet decided | status: blocked

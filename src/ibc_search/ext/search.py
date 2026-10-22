@@ -1,7 +1,24 @@
-"""Extension point: run FoldDisco searches. NOT IMPLEMENTED.
+"""Extension point: run FoldDisco searches *from Python*. NOT IMPLEMENTED.
 
-This component deliberately stops at emitting queries. What is already fixed,
-and what this stage must honour, is the contract in
+A search can already be run -- by ``scripts/folddisco_search.sh``, reachable
+as ``ibc-search folddisco-search <results_dir>``. That script invokes the
+FoldDisco binary, drops rows torn by the build's non-atomic multithreaded
+writes, and joins each hit back to its ``patch_id``. Prefer it. What remains
+unimplemented here is an *in-process* equivalent returning typed records, and
+nothing in the pipeline needs one yet.
+
+If that changes, note that the shell script is the reference implementation of
+the invocation, and anything written here must reproduce its three
+hard-won behaviours (all documented in docs/FOLDDISCO_CONTRACT.md):
+
+* default to ``-t 1`` -- above one thread this build interleaves concurrent
+  writes and tears roughly 0.5% of hit rows, nondeterministically;
+* never join hits to queries by output order, which is completion order once
+  threads are involved; join on the echoed ``query_residues`` instead;
+* treat a query string as possibly mapping to several patches, since the same
+  member set can be extracted at two radii.
+
+What is already fixed, and what this stage must honour, is the contract in
 :mod:`ibc_search.folddisco_contract`, all of it verified against the installed
 build (commit ``2a756d95...``):
 
@@ -67,9 +84,10 @@ from pathlib import Path
 from typing import Any
 
 _NOT_IMPLEMENTED = (
-    "FoldDisco search is out of scope for this component, which only extracts "
-    "motifs and emits queries. See the module docstring for the verified "
-    "invocation shape and the decisions that block implementation."
+    "No in-process FoldDisco search is implemented. Use "
+    "`ibc-search folddisco-search <results_dir>`, or scripts/folddisco_search.sh "
+    "directly, which runs the search and joins hits back to their patches. See "
+    "the module docstring before writing a Python equivalent."
 )
 
 
