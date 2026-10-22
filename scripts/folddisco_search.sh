@@ -505,7 +505,7 @@ cmd_search_ensemble() {
         die "${failed} of ${#members[@]} member searches failed"
     fi
     note ""
-    note "all ${started} members searched; compare with scripts/ensemble_compare.py ${ensemble_dir}"
+    note "all ${started} members searched"
 }
 
 # ---------------------------------------------------------------------------
