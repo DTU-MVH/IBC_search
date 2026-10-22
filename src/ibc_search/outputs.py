@@ -298,10 +298,31 @@ def write_query_file(
     The query file holds only lines FoldDisco can actually consume. The index
     file is what preserves the patch identity that the query format cannot
     carry, and it is what a later search stage joins hits back on.
+
+    **The query format cannot express a model number.** Each line is
+    ``<structure_path>\t<tokens>`` and nothing more, so a multi-model file
+    handed to FoldDisco is read at its first model regardless of which model
+    was scanned. Verified: 16 runs over the 16 models of an NMR ensemble, all
+    pointing at the one deposited file, returned byte-identical RMSDs --
+    every search had silently used model 1. A warning is raised here rather
+    than in the search stage, because this is the point where the model
+    selection is lost.
     """
     query_path = out_dir / "folddisco_queries.tsv"
     index_path = out_dir / "folddisco_queries.index.tsv"
     structure_path = str(parsed.source.path)
+
+    if len(parsed.available_models) > 1:
+        result.warnings.append(
+            f"{parsed.source.path.name} contains {len(parsed.available_models)} "
+            f"models and model {parsed.model} was scanned, but the FoldDisco "
+            "query format carries only a file path, with no field for a model "
+            "number. A search run against this query file will read the "
+            "file's FIRST model, not model "
+            f"{parsed.model}. Extract the model to its own single-model file "
+            "and scan that instead, or the search will silently use the wrong "
+            "coordinates."
+        )
 
     lines: list[str] = []
     index_rows: list[dict[str, Any]] = []

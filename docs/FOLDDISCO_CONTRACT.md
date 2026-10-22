@@ -104,6 +104,30 @@ identified the required two-field layout.
 validated by feeding it to the real binary**, which consumed it and returned
 hits, including an exact self-match at RMSD 0.0.
 
+### The query file cannot express a model number
+
+Each line is `<structure_path>\t<tokens>` and nothing else. There is no field
+for a model, so **a multi-model file is read at its first model regardless of
+which model was scanned.**
+
+Verified the hard way. Sixteen runs were made over the sixteen models of the
+NMR ensemble 2N74, each scanned with `--model N`, each query file pointing at
+the one deposited file. Every run returned **byte-identical RMSDs** (e.g.
+0.4072 / 0.2570 / 0.2882 for the same query in models 1 and 7): all sixteen
+searches had silently used model 1. Splitting the ensemble into sixteen
+single-model files and repeating the query returned entirely different hits
+per model (model 1 → `7v5e`, model 7 → `2mk9`), confirming the cause.
+
+Nothing in the output reveals this. The run manifest faithfully records
+`model = 7`, the patches are genuinely extracted from model 7, and only the
+*search* silently falls back to model 1 — so motif-level results are correct
+while hit-level results are wrong, which is the worst possible failure shape.
+
+`ibc-search scan` therefore warns whenever the input holds more than one
+model, naming the model scanned and stating that a search will read the
+first. To search a specific model, extract it to its own single-model file
+and scan that.
+
 ### Patch identity
 
 The query file format has no field for a patch ID, so

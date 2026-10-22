@@ -278,8 +278,14 @@ def cmd_scan(args: argparse.Namespace, argv: list[str]) -> int:
 
     out_dir = Path(config["run"]["output_dir"])
     t0 = time.perf_counter()
+    # write_tables can append warnings of its own -- notably that the
+    # FoldDisco query format cannot carry a model number -- so anything added
+    # here is logged too, rather than only reaching the manifest.
+    warnings_before = len(result.warnings)
     paths = write_tables(out_dir, parsed, exposure, result, config)
     timings["write_tables_s"] = time.perf_counter() - t0
+    for warning in result.warnings[warnings_before:]:
+        logger.warning("%s", warning)
 
     manifest = build_manifest(
         command=argv,
