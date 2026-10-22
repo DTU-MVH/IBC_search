@@ -1,13 +1,13 @@
-"""EXPERIMENTAL: quantify how much a perturbation ensemble changes results.
+"""EXPERIMENTAL: quantify how much an ensemble changes extracted motifs.
 
-Companion to :mod:`ibc_search.ensemble`. It answers one question -- how much
-of a single-structure result survives perturbation within the deposited
-positional uncertainty -- at two stages:
+Reads a directory of completed runs -- ``run_baseline`` plus ``run_NN`` for
+each member -- and reports how much of the baseline survives across the
+ensemble, at two stages:
 
 1. **Motif extraction.** Which patches are even found? Comparable across
-   members because perturbation moves coordinates but never renumbers
-   residues, so a query string like ``A27,A28,A49`` denotes the same residues
-   in every member.
+   members as long as the members share residue numbering -- as deposited
+   models of one entry do -- so a query string like ``A27,A28,A49`` denotes
+   the same residues in every member.
 2. **FoldDisco retrieval.** Which structures come back as hits, and is the
    top hit for a given motif stable?
 
@@ -17,7 +17,7 @@ in 3/10 can share an average yet mean very different things.
 
 Usage::
 
-    python scripts/ensemble_compare.py ensembles/8yhu
+    python scripts/ensemble_compare.py ensembles/nmr_2n74
 """
 
 from __future__ import annotations
@@ -86,8 +86,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root: Path = args.ensemble_dir
     baseline_dir = root / "run_baseline"
-    control_dir = root / "run_00"
-    member_dirs = sorted(d for d in root.glob("run_[0-9][0-9]") if d != control_dir)
+    member_dirs = sorted(root.glob("run_[0-9][0-9]"))
 
     if not baseline_dir.is_dir():
         print(f"error: no {baseline_dir}", file=sys.stderr)
@@ -97,21 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     base_hits, base_tids = read_hits(baseline_dir)
 
     print("=" * 72)
-    print("ENSEMBLE VARIANCE  (B-factor uncertainty ensemble, NOT conformational)")
+    print("ENSEMBLE VARIANCE")
     print("=" * 72)
-
-    # ---- control -------------------------------------------------------
-    if control_dir.is_dir():
-        ctrl_q = read_queries(control_dir)
-        _, ctrl_tids = read_hits(control_dir)
-        same_q = ctrl_q == base_q
-        same_t = ctrl_tids == base_tids
-        print("\nCONTROL (unperturbed, same CIF round-trip as the members)")
-        print(f"  identical motifs to baseline : {same_q}")
-        print(f"  identical hit structures     : {same_t}")
-        if not (same_q and same_t):
-            print("  !! the round-trip itself changes results; variance below is NOT")
-            print("     attributable to perturbation alone")
 
     # ---- stage 1: motif extraction -------------------------------------
     print("\n" + "-" * 72)
