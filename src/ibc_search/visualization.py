@@ -67,6 +67,7 @@ def binned_point_plot(
     reference: float | None = 0.0,
     reference_label: str = "reference mean",
     summary: str = "top_decile",
+    footnote: str | None = None,
     top_fraction: float = 0.10,
     theme: str = "light",
     max_points: int = 400,
@@ -182,7 +183,16 @@ def binned_point_plot(
                  fontsize=8.5, color=palette["text_secondary"], ha="right",
                  va="top")
 
-    fig.tight_layout(rect=(0, 0, 1, 0.86 if (title or subtitle) else 1))
+    if footnote:
+        # Stated on the figure rather than only in the caption: a z-score
+        # computed on a transformed quantity is not the same statistic as one
+        # computed on the raw values, and a reader cannot tell which they are
+        # looking at from the axis alone.
+        fig.text(0.012, 0.016, footnote, fontsize=8.2,
+                 color=palette["text_secondary"], ha="left", va="bottom")
+
+    fig.tight_layout(rect=(0, 0.055 if footnote else 0, 1,
+                           0.86 if (title or subtitle) else 1))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, facecolor=palette["surface"])
     plt.close(fig)
@@ -230,7 +240,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--score-file", default="idf_scored.tsv")
     ap.add_argument("--score-column", default="idf_z")
-    ap.add_argument("--y-label", default="IDF z-score (size-normalised)")
+    ap.add_argument("--y-label",
+                    default="IDF z-score  (log10 scale, size-normalised)")
+    ap.add_argument("--footnote", default=None,
+                    help="method note rendered at the foot of the figure")
     ap.add_argument("--title", default=None)
     ap.add_argument("--subtitle", default=None)
     ap.add_argument("--theme", choices=tuple(THEMES), default="light")
@@ -250,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         groups, args.out, y_label=args.y_label, title=args.title,
         subtitle=args.subtitle, theme=args.theme, reference=args.reference,
         max_points=args.max_points, summary=args.summary,
+        footnote=args.footnote,
     )
     total = sum(len(v) for _, bins in groups for _, v in bins)
     print(f"wrote {out}  ({len(groups)} panels, "
