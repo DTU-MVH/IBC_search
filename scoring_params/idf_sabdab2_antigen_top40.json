@@ -1,0 +1,39 @@
+{
+  "aggregate": "max",
+  "topk": null,
+  "intercept_a": 1.1112,
+  "slope_b": 0.1277,
+  "sd_by_size": {
+    "3": 0.1616,
+    "4": 0.2087,
+    "5": 0.2306,
+    "6": 0.2402,
+    "7": 0.2801,
+    "8": 0.2739,
+    "9": 0.3108,
+    "10": 0.3489
+  },
+  "centre_by_size": {
+    "3": -0.0528,
+    "4": -0.0094,
+    "5": 0.0282,
+    "6": 0.0456,
+    "7": 0.0598,
+    "8": 0.0195,
+    "9": -0.0477,
+    "10": -0.2424
+  },
+  "sd_pooled": 0.2458,
+  "min_stratum": 20,
+  "n_motifs": 1102,
+  "size_range": [
+    3,
+    12
+  ],
+  "variance_explained_by_size": 0.5169,
+  "fitted_on_index": "sabdab2_antigen",
+  "fitted_on_top": 40,
+  "source_files": [
+    "/private/tmp/claude-501/-Users-mvh-mac-Documents-master-thesis-2026-IBC-search/ffdf49fa-6d42-46d1-b30f-25cd508d3155/scratchpad/ag_ref_hits.tsv"
+  ]
+}

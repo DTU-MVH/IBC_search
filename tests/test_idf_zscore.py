@@ -201,3 +201,92 @@ def test_cap_dependent_aggregate_still_warns(tmp_path: Path):
               "--index-label", "pdb", "--top-label", "100"])
     assert r.returncode == 0
     assert "depends on where" in r.stderr, r.stderr
+
+
+# --- min-max scaling ------------------------------------------------------
+
+
+def _minmax(tmp_path: Path, motifs, params: Path, space: str = "raw") -> list[dict]:
+    hits = _hits(tmp_path / f"mm_{space}.tsv", motifs)
+    out = tmp_path / f"mmout_{space}.tsv"
+    r = _run(["minmax", str(hits), "-p", str(params), "-o", str(out),
+              "--space", space])
+    assert r.returncode == 0, r.stderr
+    return list(csv.DictReader(out.open(), delimiter="\t"))
+
+
+def test_minmax_output_is_strictly_within_unit_interval(tmp_path: Path):
+    """The whole point of the method is the [0,1] guarantee."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    for space in ("raw", "log"):
+        rows = _minmax(tmp_path, motifs, params, space)
+        vals = [float(r["idf_minmax"]) for r in rows]
+        assert vals, space
+        assert min(vals) >= 0.0 and max(vals) <= 1.0, (space, min(vals), max(vals))
+
+
+def test_minmax_preserves_order_within_a_size_class(tmp_path: Path):
+    """It is a linear rescale, so it reorders nothing of equal size."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    rows = [r for r in _minmax(tmp_path, motifs, params) if int(r["motif_size"]) == 6]
+    assert len(rows) > 5
+    by_idf = [r["query_residues"] for r in
+              sorted(rows, key=lambda r: -float(r["idf_aggregate"]))]
+    by_mm = [r["query_residues"] for r in
+             sorted(rows, key=lambda r: -float(r["idf_minmax"]))]
+    assert by_idf == by_mm
+
+
+def test_minmax_scales_per_size_not_globally(tmp_path: Path):
+    """IDF grows with size; one global range would just rank motifs by size."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    rows = _minmax(tmp_path, motifs, params)
+    by_size: dict[int, list[float]] = {}
+    for r in rows:
+        by_size.setdefault(int(r["motif_size"]), []).append(float(r["idf_minmax"]))
+    means = {s: sum(v) / len(v) for s, v in by_size.items() if len(v) >= 20}
+    assert len(means) >= 3
+    # no stratum systematically at the top or bottom of the scale
+    assert max(means.values()) - min(means.values()) < 0.35, means
+
+
+def test_minmax_clamps_values_beyond_the_reference_range(tmp_path: Path):
+    """A new protein may exceed the reference maximum; [0,1] must still hold."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    beyond = [("Z1,Z2,Z3", 1e12), ("Z1,Z2,Z3,Z4", 1e-6)]
+    hits = _hits(tmp_path / "mm_out.tsv", motifs + beyond)
+    out = tmp_path / "mm_clamped.tsv"
+    r = _run(["minmax", str(hits), "-p", str(params), "-o", str(out)])
+    assert r.returncode == 0, r.stderr
+    assert "clamped" in r.stdout, r.stdout
+    vals = [float(x["idf_minmax"]) for x in csv.DictReader(out.open(), delimiter="\t")]
+    assert min(vals) >= 0.0 and max(vals) <= 1.0
+
+
+def test_raw_and_log_spaces_differ_in_spread(tmp_path: Path):
+    """Raw keeps the right skew; log spreads the mid-range."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    raw = sorted(float(r["idf_minmax"]) for r in _minmax(tmp_path, motifs, params, "raw"))
+    log = sorted(float(r["idf_minmax"]) for r in _minmax(tmp_path, motifs, params, "log"))
+    med_raw, med_log = raw[len(raw) // 2], log[len(log) // 2]
+    assert med_log > med_raw, (med_raw, med_log)
+
+
+def test_minmax_on_parameters_without_ranges_is_refused(tmp_path: Path):
+    """Parameters fitted before min-max support carry no ranges."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    data = json.loads(params.read_text())
+    data.pop("range_by_size", None)
+    data.pop("range_global", None)
+    stale = tmp_path / "stale.json"
+    stale.write_text(json.dumps(data))
+    hits = _hits(tmp_path / "mm2.tsv", motifs)
+    r = _run(["minmax", str(hits), "-p", str(stale), "-o", str(tmp_path / "o.tsv")])
+    assert r.returncode != 0
+    assert "re-run `fit`" in r.stderr, r.stderr

@@ -129,6 +129,43 @@ def cmd_fit(args) -> int:
         for s, v in sorted(resid_by_size.items())
         if len(v) >= MIN_STRATUM and st.pstdev(v) > 0
     }
+    # The line is a good model of the size trend on a large index but not on
+    # every one: against the 5951-structure antigen set the residual means
+    # traced an inverted U (-0.33 at size 3, +0.21 at size 7, -0.70 at size
+    # 10), because IDF saturates for large motifs when there are fewer
+    # structures to be rare against. A per-size centre removes that curvature
+    # where a stratum is well populated; sparse sizes still fall back to the
+    # fitted line, which is why the line is kept.
+    centre_by_size = {
+        str(s): round(st.mean(v), 4)
+        for s, v in sorted(resid_by_size.items())
+        if len(v) >= MIN_STRATUM
+    }
+
+    # Min-max needs the observed range per size, in whichever space the
+    # scaling is applied. Recorded for both so one fit serves either method.
+    raw_by_size: dict[int, list[float]] = defaultdict(list)
+    log_by_size: dict[int, list[float]] = defaultdict(list)
+    for _, size_, agg_ in rows:
+        raw_by_size[size_].append(agg_)
+        log_by_size[size_].append(math.log10(agg_))
+    range_by_size = {
+        str(sz): {
+            "raw_min": round(min(raw_by_size[sz]), 4),
+            "raw_max": round(max(raw_by_size[sz]), 4),
+            "log_min": round(min(log_by_size[sz]), 4),
+            "log_max": round(max(log_by_size[sz]), 4),
+            "n": len(raw_by_size[sz]),
+        }
+        for sz in sorted(raw_by_size)
+        if len(raw_by_size[sz]) >= MIN_STRATUM
+    }
+    all_raw = [a for _, _, a in rows]
+    range_global = {
+        "raw_min": round(min(all_raw), 4), "raw_max": round(max(all_raw), 4),
+        "log_min": round(math.log10(min(all_raw)), 4),
+        "log_max": round(math.log10(max(all_raw)), 4),
+    }
 
     params = {
         "aggregate": args.aggregate,
@@ -136,6 +173,9 @@ def cmd_fit(args) -> int:
         "intercept_a": round(a, 4),
         "slope_b": round(b, 4),
         "sd_by_size": sd_by_size,
+        "centre_by_size": centre_by_size,
+        "range_by_size": range_by_size,
+        "range_global": range_global,
         "sd_pooled": round(pooled, 4),
         "min_stratum": MIN_STRATUM,
         "n_motifs": n,
@@ -177,6 +217,7 @@ def cmd_apply(args) -> int:
     params = json.loads(_params_path(args).read_text())
     a, b = params["intercept_a"], params["slope_b"]
     sd_by_size = {int(k): v for k, v in params["sd_by_size"].items()}
+    centre_by_size = {int(k): v for k, v in params.get("centre_by_size", {}).items()}
     pooled = params["sd_pooled"]
 
     if args.index_label and params.get("fitted_on_index") not in (None, args.index_label):
@@ -204,7 +245,9 @@ def cmd_apply(args) -> int:
                     "log10_idf", "expected_log10", "sd_used", "idf_z"])
         for q, size, agg in sorted(rows, key=lambda r: -r[2]):
             y = math.log10(agg)
-            exp = a + b * size
+            # fitted line, corrected by the stratum's own residual mean where
+            # one was measured
+            exp = a + b * size + centre_by_size.get(size, 0.0)
             sd = sd_by_size.get(size, pooled)
             if not (lo <= size <= hi):
                 extrapolated += 1
@@ -214,6 +257,72 @@ def cmd_apply(args) -> int:
     if extrapolated:
         print(f"  note: {extrapolated} motifs fall outside the fitted size "
               f"range {lo}-{hi}; their trend value is extrapolated")
+    return 0
+
+
+def cmd_minmax(args) -> int:
+    """Scale IDF strictly into [0, 1] per motif size.
+
+    An alternative to the z-score that assumes nothing about the shape of the
+    distribution -- no mean, no standard deviation, no normality. It is a
+    linear rescaling, so within a size stratum it preserves the distribution
+    exactly: only the axis changes.
+
+    Scaling is per size stratum, because IDF scales multiplicatively with
+    motif size (5.7x across sizes 3-8 on the PDB) and a single global range
+    would simply rank motifs by size.
+
+    ``--space raw`` preserves the raw distribution's shape, which is heavily
+    right-skewed: on the PDB reference, mean 12613 against median 5288. Most
+    motifs therefore land near 0 and only the extreme tail approaches 1,
+    which is the intended behaviour if the tail is what you are hunting.
+    ``--space log`` spreads the mid-range instead, at the cost of compressing
+    the tail.
+
+    Values outside the fitted range are clamped, and the count is reported:
+    a new protein can legitimately exceed the reference maximum, and silently
+    emitting 1.3 would break the [0, 1] guarantee the method exists to give.
+    """
+    params = json.loads(_params_path(args).read_text())
+    ranges = {int(k): v for k, v in params.get("range_by_size", {}).items()}
+    glob = params.get("range_global")
+    if not ranges and not glob:
+        raise SystemExit(
+            "these parameters predate min-max support and carry no ranges; "
+            "re-run `fit` to regenerate them"
+        )
+
+    lo_key, hi_key = f"{args.space}_min", f"{args.space}_max"
+    rows = collect(args.hits, params["aggregate"], params["topk"] or 10)
+    clamped = fellback = 0
+
+    with args.out.open("w", newline="") as fh:
+        w = csv.writer(fh, delimiter="\t")
+        w.writerow(["query_residues", "motif_size", "idf_aggregate",
+                    "scaled_value", "range_min", "range_max", "idf_minmax"])
+        for q, size, agg in sorted(rows, key=lambda r: -r[2]):
+            entry = ranges.get(size)
+            if entry is None:
+                entry = glob
+                fellback += 1
+            lo, hi = entry[lo_key], entry[hi_key]
+            value = agg if args.space == "raw" else math.log10(agg)
+            if hi <= lo:
+                scaled = 0.5          # degenerate stratum: no range to scale on
+            else:
+                scaled = (value - lo) / (hi - lo)
+            if scaled < 0 or scaled > 1:
+                clamped += 1
+                scaled = min(1.0, max(0.0, scaled))
+            w.writerow([q, size, f"{agg:.4f}", f"{value:.4f}",
+                        f"{lo:.4f}", f"{hi:.4f}", f"{scaled:.4f}"])
+
+    print(f"wrote {len(rows)} motifs to {args.out}  (space={args.space})")
+    if fellback:
+        print(f"  {fellback} motifs had no fitted stratum and used the global range")
+    if clamped:
+        print(f"  {clamped} motifs fell outside the reference range and were "
+              f"clamped into [0, 1]")
     return 0
 
 
@@ -241,6 +350,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--index-label", default=None)
     p.add_argument("--top-label", type=int, default=None)
     p.set_defaults(func=cmd_apply)
+
+    m = sub.add_parser("minmax", help="scale IDF into [0,1] per size (no mean assumed)")
+    m.add_argument("hits", nargs="+", type=Path)
+    m.add_argument("-p", "--params", type=Path, default=None)
+    m.add_argument("-d", "--database", default=None)
+    m.add_argument("-o", "--out", type=Path, required=True)
+    m.add_argument("--space", choices=("raw", "log"), default="raw",
+                   help="scale the raw IDF (preserves its shape) or log10 "
+                        "(spreads the mid-range) [raw]")
+    m.set_defaults(func=cmd_minmax)
 
     args = ap.parse_args(argv)
     return args.func(args)
