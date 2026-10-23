@@ -43,6 +43,7 @@ THEMES = {
         "grid": "#d9d8d4",
         "series": "#2a78d6",
         "summary": "#e34948",
+        "variance": "#ffffff",
     },
     "dark": {
         "surface": "#1a1a19",
@@ -51,6 +52,7 @@ THEMES = {
         "grid": "#3a3a38",
         "series": "#3987e5",
         "summary": "#e66767",
+        "variance": "#ffffff",
     },
 }
 
@@ -137,23 +139,20 @@ def binned_point_plot(
                 bar = float(np.median(vals))
                 lo = float(np.percentile(vals, 25))
                 hi = float(np.percentile(vals, 75))
-            ax.hlines(bar, i - 0.32, i + 0.26, color=palette["summary"],
+            # Thin white spread bar, drawn under the summary line. It reads
+            # against the point cloud it overlays; where the cloud is sparse
+            # on a light surface it is deliberately faint.
+            ax.vlines(i, lo, hi, color=palette["variance"], linewidth=1.0,
+                      alpha=0.95, zorder=3)
+            ax.hlines(bar, i - 0.30, i + 0.30, color=palette["summary"],
                       linewidth=2.4, zorder=4)
-            # The value sits beside the line it belongs to, so the reading
-            # does not depend on tracing a mark back to the y-axis.
-            ax.annotate(
-                f"{bar:+.2f}", xy=(i + 0.28, bar), xytext=(1, 0),
-                textcoords="offset points", va="center", ha="left",
-                fontsize=8.2, color=palette["text_primary"], zorder=5,
-                annotation_clip=False,
-            )
 
         ax.set_xticks(range(len(bins)))
         ax.set_xticklabels(
             [b for b, _ in bins], rotation=45, ha="right", fontsize=9,
             color=palette["text_primary"],
         )
-        ax.set_xlim(-0.6, len(bins) - 0.12)
+        ax.set_xlim(-0.6, len(bins) - 0.4)
         ax.set_title(group_name, fontsize=10.5, color=palette["text_primary"],
                      pad=9)
         counts = sum(len(v) for _, v in bins)
@@ -169,8 +168,10 @@ def binned_point_plot(
         fig.text(0.012, 0.902, subtitle, fontsize=9.5,
                  color=palette["text_secondary"], ha="left", va="top")
     if reference is not None:
-        note = (f"red line: median of the top {top_fraction:.0%} of motifs"
-                if summary == "top_decile" else "red line: median")
+        note = (f"red line: median of the top {top_fraction:.0%} of motifs; "
+                f"white bar spans that decile"
+                if summary == "top_decile"
+                else "red line: median; white bar spans the IQR")
         fig.text(0.988, 0.902, f"dashed line: {reference_label}   {note}",
                  fontsize=8.5, color=palette["text_secondary"], ha="right",
                  va="top")
