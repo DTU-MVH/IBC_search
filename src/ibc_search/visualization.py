@@ -43,7 +43,7 @@ THEMES = {
         "grid": "#d9d8d4",
         "series": "#2a78d6",
         "summary": "#e34948",
-        "variance": "#ffffff",
+        "variance": "#0b0b0b",
     },
     "dark": {
         "surface": "#1a1a19",
@@ -168,10 +168,12 @@ def binned_point_plot(
         fig.text(0.012, 0.902, subtitle, fontsize=9.5,
                  color=palette["text_secondary"], ha="left", va="top")
     if reference is not None:
+        # Colour-neutral wording: the spread bar is white on the dark
+        # surface and black on the light one.
         note = (f"red line: median of the top {top_fraction:.0%} of motifs; "
-                f"white bar spans that decile"
+                f"bar spans that decile"
                 if summary == "top_decile"
-                else "red line: median; white bar spans the IQR")
+                else "red line: median; bar spans the IQR")
         fig.text(0.988, 0.902, f"dashed line: {reference_label}   {note}",
                  fontsize=8.5, color=palette["text_secondary"], ha="right",
                  va="top")
