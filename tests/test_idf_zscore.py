@@ -1,0 +1,152 @@
+"""Tests for the IDF z-score normalisation.
+
+The properties worth pinning are the ones the measurements forced:
+
+* the size trend is **multiplicative**, so it is removed in log space -- a
+  linear detrend on raw IDF leaves residual size bias (measured: correlation
+  with size -0.063 raw vs -0.003 log);
+* the transform is monotonic within a size class, so ranking motifs of equal
+  size is unaffected;
+* parameters are index- and ``--top``-specific, so applying them elsewhere
+  warns rather than silently emitting incomparable numbers.
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import math
+import random
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "idf_zscore.py"
+
+HEADER = "tid\tidf\trmsd\tnode_count\tquery_residues\tmatching_residues"
+
+
+def _hits(path: Path, motifs: list[tuple[str, float]]) -> Path:
+    """Write a minimal hits file: one row per motif."""
+    lines = [HEADER]
+    for query, idf in motifs:
+        lines.append(f"x.cif\t{idf}\t0.1\t2\t{query}\tA1,A2")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _synthetic(n_per_size: int = 60, seed: int = 0) -> list[tuple[str, float]]:
+    """Motifs whose IDF scales multiplicatively with size, as real ones do."""
+    rng = random.Random(seed)
+    out = []
+    for size in range(3, 9):
+        for i in range(n_per_size):
+            # geometric growth with size, lognormal scatter
+            idf = (10 ** (3.0 + 0.13 * size)) * math.exp(rng.gauss(0, 0.8))
+            out.append((",".join(f"A{i}{j}" for j in range(size)), idf))
+    return out
+
+
+def _run(args: list[str]):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args], capture_output=True, text=True
+    )
+
+
+def _fit(tmp_path: Path, motifs, **kw) -> Path:
+    hits = _hits(tmp_path / "hits.tsv", motifs)
+    params = tmp_path / "p.json"
+    extra = []
+    for k, v in kw.items():
+        extra += [f"--{k.replace('_', '-')}", str(v)]
+    r = _run(["fit", str(hits), "-o", str(params), *extra])
+    assert r.returncode == 0, r.stderr
+    return params
+
+
+def test_fit_recovers_a_positive_size_slope(tmp_path: Path):
+    params = json.loads(_fit(tmp_path, _synthetic()).read_text())
+    assert params["slope_b"] > 0, "IDF grows with motif size; slope must be positive"
+    assert params["sd_pooled"] > 0
+    assert params["n_motifs"] > 0
+
+
+def test_zscore_removes_the_size_dependence(tmp_path: Path):
+    """The point of the whole exercise."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    hits = _hits(tmp_path / "h2.tsv", motifs)
+    out = tmp_path / "z.tsv"
+    r = _run(["apply", str(hits), "-p", str(params), "-o", str(out)])
+    assert r.returncode == 0, r.stderr
+
+    rows = list(csv.DictReader(out.open(), delimiter="\t"))
+    assert rows
+    by_size: dict[int, list[float]] = {}
+    for row in rows:
+        by_size.setdefault(int(row["motif_size"]), []).append(float(row["idf_z"]))
+
+    # every stratum centred near zero, none left systematically high or low
+    for size, zs in by_size.items():
+        mean = sum(zs) / len(zs)
+        assert abs(mean) < 0.25, f"size {size} mean z = {mean:.3f}, not detrended"
+
+
+def test_ranking_is_preserved_within_a_size_class(tmp_path: Path):
+    """log is monotonic: it reorders nothing among motifs of equal size."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs)
+    hits = _hits(tmp_path / "h3.tsv", motifs)
+    out = tmp_path / "z3.tsv"
+    assert _run(["apply", str(hits), "-p", str(params), "-o", str(out)]).returncode == 0
+
+    rows = [r for r in csv.DictReader(out.open(), delimiter="\t")
+            if int(r["motif_size"]) == 5]
+    assert len(rows) > 5
+    by_idf = sorted(rows, key=lambda r: -float(r["idf_aggregate"]))
+    by_z = sorted(rows, key=lambda r: -float(r["idf_z"]))
+    assert [r["query_residues"] for r in by_idf] == [r["query_residues"] for r in by_z]
+
+
+def test_applying_parameters_from_another_index_warns(tmp_path: Path):
+    """IDF rarity is defined over the index contents; mixing them is invalid."""
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs, index_label="pdb_folddisco", top_label=100)
+    hits = _hits(tmp_path / "h4.tsv", motifs)
+    r = _run(["apply", str(hits), "-p", str(params), "-o", str(tmp_path / "z4.tsv"),
+              "--index-label", "sabdab2_antigen", "--top-label", "100"])
+    assert r.returncode == 0
+    assert "not comparable" in r.stderr, r.stderr
+
+
+def test_applying_at_a_different_top_warns(tmp_path: Path):
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs, index_label="pdb_folddisco", top_label=100)
+    hits = _hits(tmp_path / "h5.tsv", motifs)
+    r = _run(["apply", str(hits), "-p", str(params), "-o", str(tmp_path / "z5.tsv"),
+              "--index-label", "pdb_folddisco", "--top-label", "10"])
+    assert r.returncode == 0
+    assert "truncated" in r.stderr, r.stderr
+
+
+def test_too_few_motifs_is_refused(tmp_path: Path):
+    """Fitting a trend on a handful of motifs would be noise."""
+    hits = _hits(tmp_path / "h6.tsv", [("A1,A2,A3", 1000.0), ("A1,A2,A3,A4", 2000.0)])
+    r = _run(["fit", str(hits), "-o", str(tmp_path / "p6.json")])
+    assert r.returncode != 0
+    assert "too few" in r.stderr
+
+
+def test_zero_and_negative_idf_are_dropped_not_logged(tmp_path: Path):
+    """log10 of a non-positive IDF is undefined; such rows must not crash."""
+    motifs = _synthetic(n_per_size=25)
+    motifs += [("B1,B2,B3", 0.0), ("B1,B2,B3,B4", -5.0)]
+    params = _fit(tmp_path, motifs)
+    hits = _hits(tmp_path / "h7.tsv", motifs)
+    out = tmp_path / "z7.tsv"
+    r = _run(["apply", str(hits), "-p", str(params), "-o", str(out)])
+    assert r.returncode == 0, r.stderr
+    queries = {row["query_residues"] for row in csv.DictReader(out.open(), delimiter="\t")}
+    assert "B1,B2,B3" not in queries and "B1,B2,B3,B4" not in queries

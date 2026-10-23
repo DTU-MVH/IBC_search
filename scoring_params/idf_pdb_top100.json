@@ -1,0 +1,27 @@
+{
+  "aggregate": "max",
+  "topk": null,
+  "intercept_a": 3.1693,
+  "slope_b": 0.1333,
+  "sd_by_size": {
+    "3": 0.2891,
+    "4": 0.2901,
+    "5": 0.3809,
+    "6": 0.4577,
+    "7": 0.4683,
+    "8": 0.4125
+  },
+  "sd_pooled": 0.3749,
+  "min_stratum": 20,
+  "n_motifs": 883,
+  "size_range": [
+    3,
+    10
+  ],
+  "variance_explained_by_size": 0.2202,
+  "fitted_on_index": "pdb_folddisco",
+  "fitted_on_top": 100,
+  "source_files": [
+    "results/8yhu_r4-7/folddisco_hits.tsv"
+  ]
+}
