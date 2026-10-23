@@ -36,7 +36,7 @@ from typing import Any
 
 from . import __version__
 from .ball_search_algo import run_ball_search
-from .config import default_config_path, load_config
+from .config import default_config_path, load_config, resolve_database
 from .errors import IbcSearchError
 from .exposure import compute_exposure
 from .logging_utils import setup_logging
@@ -157,8 +157,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument("-c", "--config", type=Path, default=None)
     search.add_argument(
+        "-d", "--database", default=None,
+        help=(
+            "named reference database from [folddisco.databases] "
+            "(default: [folddisco].default_database). Selecting by name keeps "
+            "the index and its fitted IDF z-score parameters together"
+        ),
+    )
+    search.add_argument(
         "-i", "--index", default=None,
-        help="index table to search (default: [folddisco].reference_index_path)",
+        help="explicit index path, overriding --database",
     )
     search.add_argument(
         "-t", "--threads", type=int, default=None,
@@ -378,7 +386,18 @@ def cmd_folddisco_search(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     fd = config["folddisco"]
 
-    index = args.index or fd.get("reference_index_path") or ""
+    # An explicit --index wins; otherwise resolve the named database, falling
+    # back to the legacy single-index key so older configs keep working.
+    index = args.index or ""
+    if not index:
+        try:
+            entry = resolve_database(config, args.database)
+            index = str(entry["index_path"])
+            print(f"database: {entry['name']}", file=sys.stderr)
+        except IbcSearchError:
+            if args.database:
+                raise
+            index = fd.get("reference_index_path") or ""
     threads = args.threads if args.threads is not None else fd.get("search_threads", 1)
 
     cmd: list[str] = [str(_search_script()), "search", args.results_dir]
