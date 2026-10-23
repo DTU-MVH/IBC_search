@@ -208,3 +208,53 @@ def scale_label(config: dict[str, Any], radius: float) -> str:
         if abs(float(key) - float(radius)) < 1e-9:
             return str(value)
     return "unlabelled"
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+"""Repository root, which registry paths may be written relative to."""
+
+
+def _resolve_path(value: str) -> Path:
+    """Expand ``~`` and resolve a registry path against the repository root."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else (REPO_ROOT / path)
+
+
+def database_names(config: dict[str, Any]) -> list[str]:
+    return sorted((config.get("folddisco", {}).get("databases") or {}))
+
+
+def resolve_database(config: dict[str, Any], name: str | None = None) -> dict[str, Any]:
+    """Look up a named reference database and resolve its paths.
+
+    Returns the registry entry plus ``name``, ``index_path`` and
+    ``idf_params_path`` as :class:`Path`. Raises :class:`ConfigError` naming
+    the available databases rather than failing later on a missing file.
+
+    The pairing matters: IDF measures rarity over an index's contents and the
+    per-motif aggregate is taken over a ``--top``-truncated hit list, so
+    parameters fitted against one database are meaningless against another.
+    Resolving both from one entry is what keeps them together.
+    """
+    registry = (config.get("folddisco", {}) or {}).get("databases") or {}
+    if not registry:
+        raise ConfigError("no [folddisco.databases] are configured")
+
+    chosen = name or config.get("folddisco", {}).get("default_database")
+    if not chosen:
+        raise ConfigError(
+            "no database given and [folddisco].default_database is unset; "
+            f"available: {', '.join(sorted(registry))}"
+        )
+    if chosen not in registry:
+        raise ConfigError(
+            f"unknown reference database {chosen!r}; available: "
+            f"{', '.join(sorted(registry))}"
+        )
+
+    entry = dict(registry[chosen])
+    entry["name"] = chosen
+    entry["index_path"] = _resolve_path(entry.get("index_path", ""))
+    params = entry.get("idf_params")
+    entry["idf_params_path"] = _resolve_path(params) if params else None
+    return entry

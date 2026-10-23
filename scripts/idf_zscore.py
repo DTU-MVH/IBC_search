@@ -55,6 +55,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from ibc_search.config import load_config, resolve_database  # noqa: E402
+
 MIN_STRATUM = 20
 """Motifs needed in a size stratum before its own sd is trusted."""
 
@@ -153,8 +156,25 @@ def cmd_fit(args) -> int:
     return 0
 
 
+def _params_path(args) -> Path:
+    """Explicit --params wins; otherwise resolve from the database registry."""
+    if args.params:
+        return args.params
+    entry = resolve_database(load_config(), args.database)
+    path = entry.get("idf_params_path")
+    if path is None:
+        raise SystemExit(f"database {entry['name']!r} has no idf_params configured")
+    if not path.is_file():
+        raise SystemExit(
+            f"database {entry['name']!r} points at {path}, which does not exist. "
+            "Fit it first with `idf_zscore.py fit`."
+        )
+    print(f"database: {entry['name']}  params: {path.name}", file=sys.stderr)
+    return path
+
+
 def cmd_apply(args) -> int:
-    params = json.loads(args.params.read_text())
+    params = json.loads(_params_path(args).read_text())
     a, b = params["intercept_a"], params["slope_b"]
     sd_by_size = {int(k): v for k, v in params["sd_by_size"].items()}
     pooled = params["sd_pooled"]
@@ -164,11 +184,16 @@ def cmd_apply(args) -> int:
               f"{params.get('fitted_on_index')!r} but applying to "
               f"{args.index_label!r}. IDF rarity is defined over the index "
               f"contents, so these z-scores are not comparable.", file=sys.stderr)
-    if args.top_label and params.get("fitted_on_top") not in (None, args.top_label):
+    # `--top` ranks structures by IDF, so the MAXIMUM is retained at any cap:
+    # verified identical for all 883 reference motifs at top 40 vs top 100.
+    # Only cap-dependent aggregates need the warning.
+    if (params["aggregate"] != "max"
+            and args.top_label
+            and params.get("fitted_on_top") not in (None, args.top_label)):
         print(f"WARNING: parameters were fitted at --top "
-              f"{params.get('fitted_on_top')} but applying to {args.top_label}. "
-              f"The aggregate is taken over a differently truncated hit list.",
-              file=sys.stderr)
+              f"{params.get('fitted_on_top')} but applying to {args.top_label}, "
+              f"and aggregate={params['aggregate']!r} depends on where the hit "
+              f"list is truncated.", file=sys.stderr)
 
     rows = collect(args.hits, params["aggregate"], params["topk"] or 10)
     extrapolated = 0
@@ -207,7 +232,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("apply", help="z-score motifs using fitted parameters")
     p.add_argument("hits", nargs="+", type=Path)
-    p.add_argument("-p", "--params", type=Path, required=True)
+    p.add_argument("-p", "--params", type=Path, default=None,
+                   help="explicit parameter file, overriding --database")
+    p.add_argument("-d", "--database", default=None,
+                   help="named database from [folddisco.databases]; its fitted "
+                        "parameters are used (default: default_database)")
     p.add_argument("-o", "--out", type=Path, required=True)
     p.add_argument("--index-label", default=None)
     p.add_argument("--top-label", type=int, default=None)

@@ -62,7 +62,7 @@ THREADS="${IBC_FOLDDISCO_THREADS:-1}"
 # THIS IS A RETRIEVAL CUTOFF AND IT CHANGES WHAT YOU SEE. A true match ranked
 # below N is not reported. Raise it, or pass --no-top, when recall matters
 # more than runtime.
-TOP="${IBC_FOLDDISCO_TOP:-1000}"
+TOP="${IBC_FOLDDISCO_TOP:-40}"
 
 # Per-match columns. `query_residues` is the reliable side of the round trip
 # (it echoes exactly what was sent); `matching_residues` is NOT reliably
@@ -88,7 +88,7 @@ search options:
   -t, --threads N        FoldDisco threads [1 -- see the note below]
   -o, --output PATH      hits file  [<results_dir>/folddisco_hits.tsv]
       --format-output S  comma-separated per-match columns
-      --top N            keep the top N structures per query by IDF [1000]
+      --top N            keep the top N structures per query by IDF [40]
       --no-top           no cap -- see the warning below
       --rmsd X           maximum RMSD cutoff
       --keep-raw         keep the unjoined FoldDisco output alongside the hits

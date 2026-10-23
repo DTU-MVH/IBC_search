@@ -218,10 +218,45 @@ search_format_output = "tid,idf,rmsd,node_count,query_residues,matching_residues
 # This is a RETRIEVAL CUTOFF, not a neutral performance knob: a true match
 # ranked below N is never reported, and how retrieval quality varies with
 # this value is uncharacterised. It must be part of any sensitivity study.
-search_top = 1000               # unit: structures | provenance: measured on this machine | status: proposed
+search_top = 40                 # unit: structures | provenance: measured on this machine | status: proposed
 # A curated B-cell-epitope / antibody-antigen reference collection. STILL NOT
 # CHOSEN, and deliberately a separate key from reference_index_path above:
 # searching the whole PDB gives a structural-similarity background, which is
 # not the same question as "does this motif resemble a known epitope". Until
 # something is named here, no hit can be read as evidence of antigenicity.
 epitope_reference_index_path = ""  # unit: path    | provenance: not yet decided | status: blocked
+
+
+# ---------------------------------------------------------------------------
+# Reference databases
+#
+# A named registry, so an index and the IDF z-score parameters fitted against
+# it travel together. They MUST match: IDF measures rarity over the index
+# contents and the per-motif aggregate is taken over a hit list truncated by
+# --top, so parameters fitted on one database produce meaningless z-scores on
+# another. Selecting a database by name makes that pairing impossible to get
+# wrong by hand.
+#
+# `index_path` may be absolute, start with ~, or be relative to the repository
+# root. `idf_params` is relative to the repository root.
+# ---------------------------------------------------------------------------
+
+# Which database folddisco-search and the scorer use unless told otherwise.
+default_database = "pdb"        # unit: name       | provenance: this impl | status: proposed
+
+[folddisco.databases.pdb]
+# The whole PDB: 230655 structures. A general structural background, NOT a
+# collection of known epitopes -- a hit here says a motif's geometry occurs
+# somewhere in the PDB and nothing more.
+index_path = "../folddisco_databases/index/pdb_folddisco"  # unit: path | provenance: opendata.mmseqs.org | status: verified
+idf_params = "scoring_params/idf_pdb_top40.json"          # unit: path | provenance: fitted on this machine | status: proposed
+fitted_top = 40                 # unit: count      | provenance: this impl | status: proposed
+
+[folddisco.databases.sabdab2_antigen]
+# Antigen chains from SAbDab2 antibody complexes, antibody stripped, every
+# residue carrying a known epitope label. Smaller and far faster than the
+# PDB, and the only database against which "did this motif match a region an
+# antibody actually binds" is answerable.
+index_path = "~/documents_local_only/master_thesis_data_files/sabdab2_antigen_index/index/sabdab2_antigen"  # unit: path | provenance: built from SAbDab2 ML release | status: proposed
+idf_params = "scoring_params/idf_sabdab2_antigen_top40.json"  # unit: path | provenance: fitted on this machine | status: proposed
+fitted_top = 40                 # unit: count      | provenance: this impl | status: proposed

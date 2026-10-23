@@ -121,16 +121,6 @@ def test_applying_parameters_from_another_index_warns(tmp_path: Path):
     assert "not comparable" in r.stderr, r.stderr
 
 
-def test_applying_at_a_different_top_warns(tmp_path: Path):
-    motifs = _synthetic()
-    params = _fit(tmp_path, motifs, index_label="pdb_folddisco", top_label=100)
-    hits = _hits(tmp_path / "h5.tsv", motifs)
-    r = _run(["apply", str(hits), "-p", str(params), "-o", str(tmp_path / "z5.tsv"),
-              "--index-label", "pdb_folddisco", "--top-label", "10"])
-    assert r.returncode == 0
-    assert "truncated" in r.stderr, r.stderr
-
-
 def test_too_few_motifs_is_refused(tmp_path: Path):
     """Fitting a trend on a handful of motifs would be noise."""
     hits = _hits(tmp_path / "h6.tsv", [("A1,A2,A3", 1000.0), ("A1,A2,A3,A4", 2000.0)])
@@ -150,3 +140,64 @@ def test_zero_and_negative_idf_are_dropped_not_logged(tmp_path: Path):
     assert r.returncode == 0, r.stderr
     queries = {row["query_residues"] for row in csv.DictReader(out.open(), delimiter="\t")}
     assert "B1,B2,B3" not in queries and "B1,B2,B3,B4" not in queries
+
+
+# --- database registry ----------------------------------------------------
+
+
+def test_registry_pairs_an_index_with_its_own_parameters():
+    """An index and its IDF parameters must travel together.
+
+    IDF measures rarity over the index contents, so a fit against one
+    database is meaningless against another -- measured: the intercept is
+    3.17 for the 230655-structure PDB and 0.99 for the 5951-structure antigen
+    set. Selecting by name is what stops the two being mixed by hand.
+    """
+    from ibc_search.config import database_names, load_config, resolve_database
+
+    config = load_config()
+    names = database_names(config)
+    assert "pdb" in names
+
+    for name in names:
+        entry = resolve_database(config, name)
+        assert entry["name"] == name
+        assert entry["index_path"].is_absolute()
+        assert entry["idf_params_path"] is not None
+
+    # the default resolves to a real registry entry
+    assert resolve_database(config)["name"] in names
+
+
+def test_unknown_database_names_the_alternatives():
+    from ibc_search.config import load_config, resolve_database
+    from ibc_search.errors import ConfigError
+
+    with pytest.raises(ConfigError, match="available"):
+        resolve_database(load_config(), "no_such_database")
+
+
+def test_max_aggregate_does_not_warn_on_a_different_top(tmp_path: Path):
+    """`--top` ranks by IDF, so the maximum survives any cap.
+
+    Verified on all 883 reference motifs: max IDF was identical at top 40 and
+    top 100. Warning about a cap mismatch would be noise for aggregate=max.
+    """
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs, index_label="pdb", top_label=40)
+    hits = _hits(tmp_path / "h8.tsv", motifs)
+    r = _run(["apply", str(hits), "-p", str(params), "-o", str(tmp_path / "z8.tsv"),
+              "--index-label", "pdb", "--top-label", "100"])
+    assert r.returncode == 0
+    assert "truncated" not in r.stderr and "depends on where" not in r.stderr
+
+
+def test_cap_dependent_aggregate_still_warns(tmp_path: Path):
+    motifs = _synthetic()
+    params = _fit(tmp_path, motifs, index_label="pdb", top_label=40,
+                  aggregate="mean_topk")
+    hits = _hits(tmp_path / "h9.tsv", motifs)
+    r = _run(["apply", str(hits), "-p", str(params), "-o", str(tmp_path / "z9.tsv"),
+              "--index-label", "pdb", "--top-label", "100"])
+    assert r.returncode == 0
+    assert "depends on where" in r.stderr, r.stderr

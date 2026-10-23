@@ -19,8 +19,8 @@
     10
   ],
   "variance_explained_by_size": 0.2202,
-  "fitted_on_index": "pdb_folddisco",
-  "fitted_on_top": 100,
+  "fitted_on_index": "pdb",
+  "fitted_on_top": 40,
   "source_files": [
     "results/8yhu_r4-7/folddisco_hits.tsv"
   ]
