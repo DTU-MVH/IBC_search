@@ -144,6 +144,10 @@ def binned_point_plot(
             # on a light surface it is deliberately faint.
             ax.vlines(i, lo, hi, color=palette["variance"], linewidth=1.0,
                       alpha=0.95, zorder=3)
+            # Caps mark where the span ends. Without them the line fades into
+            # the point cloud and its extent has to be guessed.
+            ax.hlines([lo, hi], i - 0.10, i + 0.10, color=palette["variance"],
+                      linewidth=1.0, alpha=0.95, zorder=3)
             ax.hlines(bar, i - 0.30, i + 0.30, color=palette["summary"],
                       linewidth=2.4, zorder=4)
 
