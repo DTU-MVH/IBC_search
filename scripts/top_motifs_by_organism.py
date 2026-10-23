@@ -147,7 +147,37 @@ def process(
     if not selected:
         return None
 
-    written = unknown = 0
+    unknown = 0
+    rows: list[tuple[int, float, list]] = []
+    for r in csv.DictReader(hits.open(), delimiter="\t"):
+        q = r.get("query_residues", "")
+        if q not in selected:
+            continue
+        rank, z = selected[q]
+        pdb = pdb_id_from_tid(r.get("tid", ""))
+        chains = matched_chains(r.get("matching_residues", ""))
+        tax_ids, names, source = resolve_organism(pdb, chains, by_chain, by_entry)
+        if source == "unknown":
+            unknown += 1
+        try:
+            idf = float(r.get("idf", "0") or 0)
+        except ValueError:
+            idf = 0.0
+        rows.append((rank, -idf, [
+            rank, z, q, len([t for t in q.split(",") if t]),
+            r.get("patch_id", ""), r.get("tid", ""), pdb or "",
+            "|".join(chains), r.get("idf", ""), r.get("rmsd", ""),
+            r.get("node_count", ""), r.get("matching_residues", ""),
+            tax_ids, names, source,
+            "1" if HUMAN_TAX_ID in tax_ids.split("|") else "0",
+        ]))
+
+    # Highest-scoring motif first, and within a motif its strongest hit
+    # first, so the rows worth reading are at the top of the file. The hits
+    # file itself is in FoldDisco's output order, which carries no meaning
+    # here.
+    rows.sort(key=lambda t: (t[0], t[1]))
+
     out = results_dir / out_name
     with out.open("w", newline="") as fh:
         w = csv.writer(fh, delimiter="\t")
@@ -157,26 +187,9 @@ def process(
             "idf", "rmsd", "node_count", "matching_residues",
             "organism_tax_ids", "organism_names", "organism_source", "is_human",
         ])
-        for r in csv.DictReader(hits.open(), delimiter="\t"):
-            q = r.get("query_residues", "")
-            if q not in selected:
-                continue
-            rank, z = selected[q]
-            pdb = pdb_id_from_tid(r.get("tid", ""))
-            chains = matched_chains(r.get("matching_residues", ""))
-            tax_ids, names, source = resolve_organism(pdb, chains, by_chain, by_entry)
-            if source == "unknown":
-                unknown += 1
-            w.writerow([
-                rank, z, q, len([t for t in q.split(",") if t]),
-                r.get("patch_id", ""), r.get("tid", ""), pdb or "",
-                "|".join(chains), r.get("idf", ""), r.get("rmsd", ""),
-                r.get("node_count", ""), r.get("matching_residues", ""),
-                tax_ids, names, source,
-                "1" if HUMAN_TAX_ID in tax_ids.split("|") else "0",
-            ])
-            written += 1
-    return len(selected), written, unknown
+        for _, _, row in rows:
+            w.writerow(row)
+    return len(selected), len(rows), unknown
 
 
 def main(argv: list[str] | None = None) -> int:
