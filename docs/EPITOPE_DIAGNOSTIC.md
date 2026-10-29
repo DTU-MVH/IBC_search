@@ -36,10 +36,10 @@ scorer and its saved results are unchanged.
 Use absolute paths for both positional arguments. A small pilot command:
 
 ```bash
-/Users/mvh_mac/Documents/master_thesis_2026/IBC_search/.venv/bin/python -B \
-  /Users/mvh_mac/Documents/master_thesis_2026/IBC_search/scripts/epitope_diagnostic.py \
-  /Users/mvh_mac/documents_local_only/master_thesis_data_files/sabdab2_antigen_index \
-  /Users/mvh_mac/Documents/master_thesis_2026/IBC_search/results/epitope_diagnostic_pilot \
+~/documents_local_only/IBC_search/.venv/bin/python -B \
+  ~/documents_local_only/IBC_search/scripts/epitope_diagnostic.py \
+  ~/documents_local_only/master_thesis_data_files/sabdab2_antigen_index \
+  ~/documents_local_only/IBC_search/results/epitope_diagnostic_pilot \
   -n 3 --budgets 10,50 --top 50 --query-limit 5
 ```
 

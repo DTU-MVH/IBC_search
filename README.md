@@ -39,7 +39,7 @@ and [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §5 for what blocks them.
 Requires Python ≥ 3.11, NumPy, SciPy and biotite. No GPU, no large downloads.
 
 ```bash
-cd /Users/mvh_mac/Documents/master_thesis_2026/IBC_search
+cd ~/documents_local_only/IBC_search
 python3 -m venv .venv
 .venv/bin/python -m pip install numpy scipy biotite pytest
 ```

@@ -248,7 +248,10 @@ default_database = "pdb"        # unit: name       | provenance: this impl | sta
 # The whole PDB: 230655 structures. A general structural background, NOT a
 # collection of known epitopes -- a hit here says a motif's geometry occurs
 # somewhere in the PDB and nothing more.
-index_path = "../folddisco_databases/index/pdb_folddisco"  # unit: path | provenance: opendata.mmseqs.org | status: verified
+# Absolute (via ~) rather than relative to the repository root: the index is
+# 132 GB and does NOT live beside the repository, so a "../" path silently
+# resolves to nothing as soon as the repository is moved.
+index_path = "~/Documents/master_thesis_2026/folddisco_databases/index/pdb_folddisco"  # unit: path | provenance: opendata.mmseqs.org | status: verified
 # Fitted on 12986 motifs from 100 proteins of 150-500 residues, non-redundant
 # at 30% sequence identity, single chain, X-ray <= 2.0 A, scanned at radius
 # 6 A against this index at --top 40. Verified on its own motifs: z mean
