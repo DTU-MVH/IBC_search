@@ -1,0 +1,133 @@
+{
+  "aggregate": "max",
+  "topk": null,
+  "intercept_a": 3.1793,
+  "slope_b": 0.1229,
+  "sd_by_size": {
+    "3": 0.3602,
+    "4": 0.3621,
+    "5": 0.4299,
+    "6": 0.4965,
+    "7": 0.5717,
+    "8": 0.5665,
+    "9": 0.6198
+  },
+  "centre_by_size": {
+    "3": -0.0385,
+    "4": 0.0121,
+    "5": 0.003,
+    "6": 0.0168,
+    "7": -0.038,
+    "8": 0.0204,
+    "9": -0.0085
+  },
+  "range_by_size": {
+    "3": {
+      "raw_min": 41.3224,
+      "raw_max": 14966.7275,
+      "log_min": 1.6162,
+      "log_max": 4.1751,
+      "n": 217
+    },
+    "4": {
+      "raw_min": 25.5327,
+      "raw_max": 45578.1836,
+      "log_min": 1.4071,
+      "log_max": 4.6588,
+      "n": 567
+    },
+    "5": {
+      "raw_min": 93.6,
+      "raw_max": 177060.3906,
+      "log_min": 1.9713,
+      "log_max": 5.2481,
+      "n": 751
+    },
+    "6": {
+      "raw_min": 129.4841,
+      "raw_max": 248978.3594,
+      "log_min": 2.1122,
+      "log_max": 5.3962,
+      "n": 661
+    },
+    "7": {
+      "raw_min": 178.2256,
+      "raw_max": 188820.125,
+      "log_min": 2.251,
+      "log_max": 5.276,
+      "n": 380
+    },
+    "8": {
+      "raw_min": 267.9011,
+      "raw_max": 218532.0156,
+      "log_min": 2.428,
+      "log_max": 5.3395,
+      "n": 131
+    },
+    "9": {
+      "raw_min": 509.8805,
+      "raw_max": 138490.25,
+      "log_min": 2.7075,
+      "log_max": 5.1414,
+      "n": 35
+    }
+  },
+  "range_global": {
+    "raw_min": 25.5327,
+    "raw_max": 248978.3594,
+    "log_min": 1.4071,
+    "log_max": 5.3962
+  },
+  "sd_pooled": 0.4616,
+  "min_stratum": 20,
+  "n_motifs": 2747,
+  "size_range": [
+    3,
+    10
+  ],
+  "variance_explained_by_size": 0.117,
+  "fitted_on_index": "pdb",
+  "fitted_on_top": 40,
+  "source_files": [
+    "results/minibinder_run_5.5A/pdb_00001egj_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00001jrh_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00002h32_H_A/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00002ybr_G_H/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00003ab0_E_F/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00003lh2_J_N/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00003nh7_I_M/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00003pnw_Q_P/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00003s37_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00004qhu_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00004uu9_A_B/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00005c2u_B_+/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00005g5r_B_+/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00005t80_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00006ey0_F_+/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00006flb_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00006o9i_A_B/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00006sv2_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00006u9s_A_B/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00006w0j_A_B/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00007cqd_I_M/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00007czd_A_+/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00007lse_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00007n3c_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00007r23_C_+/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00007w71_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00007yru_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00008dcn_D_E/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00008ds5_C_B/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00008iow_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00008tea_H_G/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00008tft_H_L/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00008vk1_F_E/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00009eze_B_C/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00009f90_A_B/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00009fys_I_M/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00009hub_B_C/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00009hub_I_M/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00009min_J_+/folddisco_hits.tsv",
+    "results/minibinder_run_5.5A/pdb_00009npg_A_B/folddisco_hits.tsv"
+  ]
+}

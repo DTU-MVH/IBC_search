@@ -249,8 +249,28 @@ default_database = "pdb"        # unit: name       | provenance: this impl | sta
 # collection of known epitopes -- a hit here says a motif's geometry occurs
 # somewhere in the PDB and nothing more.
 index_path = "../folddisco_databases/index/pdb_folddisco"  # unit: path | provenance: opendata.mmseqs.org | status: verified
-idf_params = "scoring_params/idf_pdb_top40.json"          # unit: path | provenance: fitted on this machine | status: proposed
+# Fitted on 12986 motifs from 100 proteins of 150-500 residues, non-redundant
+# at 30% sequence identity, single chain, X-ray <= 2.0 A, scanned at radius
+# 6 A against this index at --top 40. Verified on its own motifs: z mean
+# -0.0004, sd 1.0000, and every size stratum from 3 to 11 (12977 of 12986
+# motifs) has a residual mean within 0.0005 of zero, so the size trend is
+# fully removed where the data support a fit. See
+# results/bg100_r6/figures/calibration_summary.json.
+#
+# KNOWN LIMITS. The body is normal but both tails are heavier: the 99th
+# percentile sits at +2.56 against a normal's +2.33 and the 99.9th at +3.62
+# against +3.09, so a cut above roughly +2.3 selects more than a normal
+# table predicts. At +1.6 the agreement is close (5.71% of motifs against a
+# nominal 5.48%). Motifs of size 12 or more are too rare here to fit their
+# own stratum (9 motifs) and score about +0.5 z high on the pooled sd.
+idf_params = "scoring_params/idf_bg100_r6_top40.json"      # unit: path | provenance: fitted and calibration-checked on this machine | status: verified
 fitted_top = 40                 # unit: count      | provenance: this impl | status: proposed
+# The ball radius the fitting runs were scanned at. MEASURED to matter: the
+# size slope b is 0.1105 here and 0.1208 for the other 6 A fit, against
+# 0.0568 and 0.0574 for the two 5-5.5 A fits. The slope tracks the radius,
+# not the protein set, so parameters fitted at one radius are a different
+# population and must not be applied at another.
+fitted_radius_angstrom = 6.0    # unit: angstrom   | provenance: measured on this machine | status: verified
 
 [folddisco.databases.sabdab2_antigen]
 # Antigen chains from SAbDab2 antibody complexes, antibody stripped, every

@@ -185,6 +185,7 @@ def cmd_fit(args) -> int:
         ),
         "fitted_on_index": args.index_label,
         "fitted_on_top": args.top_label,
+        "fitted_on_radius_angstrom": args.radius_label,
         "source_files": [str(p) for p in args.hits],
     }
     args.out.write_text(json.dumps(params, indent=2))
@@ -236,11 +237,23 @@ def cmd_apply(args) -> int:
               f"and aggregate={params['aggregate']!r} depends on where the hit "
               f"list is truncated.", file=sys.stderr)
 
+    # Radius is checked as loudly as the index, because it was measured to
+    # change the fit more than the protein set does: the size slope is 0.11
+    # at 6 A and 0.057 at 5-5.5 A, so applying across radii reintroduces
+    # exactly the size dependence the z-score exists to remove.
+    fitted_radius = params.get("fitted_on_radius_angstrom")
+    if (args.radius_label is not None and fitted_radius is not None
+            and abs(float(fitted_radius) - args.radius_label) > 1e-9):
+        print(f"WARNING: parameters were fitted at ball radius "
+              f"{fitted_radius} A but applying to {args.radius_label} A. The "
+              f"IDF size trend depends on radius, so these z-scores carry a "
+              f"residual size dependence.", file=sys.stderr)
+
     rows = collect(args.hits, params["aggregate"], params["topk"] or 10)
     extrapolated = 0
     lo, hi = params["size_range"]
     with args.out.open("w", newline="") as fh:
-        w = csv.writer(fh, delimiter="\t")
+        w = csv.writer(fh, delimiter="\t", lineterminator="\n")
         w.writerow(["query_residues", "motif_size", "idf_aggregate",
                     "log10_idf", "expected_log10", "sd_used", "idf_z"])
         for q, size, agg in sorted(rows, key=lambda r: -r[2]):
@@ -297,7 +310,7 @@ def cmd_minmax(args) -> int:
     clamped = fellback = 0
 
     with args.out.open("w", newline="") as fh:
-        w = csv.writer(fh, delimiter="\t")
+        w = csv.writer(fh, delimiter="\t", lineterminator="\n")
         w.writerow(["query_residues", "motif_size", "idf_aggregate",
                     "scaled_value", "range_min", "range_max", "idf_minmax"])
         for q, size, agg in sorted(rows, key=lambda r: -r[2]):
@@ -337,6 +350,12 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--topk", type=int, default=10)
     f.add_argument("--index-label", default=None, help="which index these came from")
     f.add_argument("--top-label", type=int, default=None, help="--top used")
+    f.add_argument("--radius-label", type=float, default=None,
+                   help="ball radius the fitting runs were scanned at. "
+                        "Recorded so `apply` can refuse to mix radii: the "
+                        "size slope tracks the radius (0.11 at 6 A against "
+                        "0.057 at 5-5.5 A), so a reference fitted at one "
+                        "radius is a different population.")
     f.set_defaults(func=cmd_fit)
 
     p = sub.add_parser("apply", help="z-score motifs using fitted parameters")
@@ -349,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--out", type=Path, required=True)
     p.add_argument("--index-label", default=None)
     p.add_argument("--top-label", type=int, default=None)
+    p.add_argument("--radius-label", type=float, default=None,
+                   help="ball radius these hits were scanned at; warns on a "
+                        "mismatch with the fitted radius")
     p.set_defaults(func=cmd_apply)
 
     m = sub.add_parser("minmax", help="scale IDF into [0,1] per size (no mean assumed)")
