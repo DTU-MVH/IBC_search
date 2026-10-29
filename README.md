@@ -246,6 +246,35 @@ panics, returning 4 871 hit rows in 2.98 s.
 companion `*_missing_reason` column — never as `0`. A SASA of 0.0 is a real
 measurement for a buried residue, so overloading zero would corrupt the data.
 
+## Downstream analysis scripts
+
+`scan` and `folddisco-search` are the component this repository is *about*;
+the scripts below consume their output. They are deliberately separate files
+rather than subcommands, because each one makes an interpretive choice that
+the core component refuses to make.
+
+| script | what it does |
+|---|---|
+| `run_panel.py` | scans and searches every structure in a `panel.tsv`, N at a time, one single-threaded FoldDisco per structure; resumes by re-invocation |
+| `idf_zscore.py` | `fit` / `apply` / `minmax` — size-detrended normalisation of FoldDisco IDF (see its docstring for why raw IDF cannot be used directly) |
+| `residue_scores.py` | projects motif z-scores onto residues, each residue taking the **maximum** z of the motifs containing it; scores against epitope labels where they exist |
+| `render_pymol.py` | one structure as a score-coloured cartoon in a translucent surface, via PyMOL; writes the score into the B-factor column so any viewer can reproduce it |
+| `render_all_structures.py` | the above for a whole run, in parallel, into `<run>/<instance>/00_figures/` |
+| `plot_epitope_scores.py` | the run-level summary figures, chosen by whether the run has epitope labels |
+| `hit_organism_stats.py` | human vs non-human hits **against the composition of the searched index**, which is the only way that fraction means anything |
+| `top_motifs_by_organism.py` | per-hit organism annotation for the top-scoring motifs |
+| `minibinder_epitope_sample.py` | selects small SAbDab2 antigens and labels contact epitopes |
+| `ada_binder_panel.py` | assembles the designed-binder panel with its ELISA annotation |
+
+Two conventions hold across all of them, and both exist because the opposite
+fails silently:
+
+- **a residue in no emitted motif has no score** — it is absent from the
+  output, never scored zero, because zero sits in the middle of the real
+  range and would read as "assessed, unremarkable";
+- **an unknown organism is `unknown`, never "not human"**, so any fraction
+  computed over those rows has an honest denominator.
+
 ## The algorithm, in brief
 
 For each solvent-exposed residue (a *seed*), place a ball at a representative
