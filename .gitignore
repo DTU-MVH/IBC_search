@@ -16,3 +16,8 @@ ensembles/
 
 # macOS
 .DS_Store
+
+# Downloaded structure sets for investigations (regenerate with
+# scripts/build_investigation_db.py); untracked because they are bulk
+# third-party data, not source.
+investigation_databases/
