@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     n_res = n_exp = n_done = 0
 
     with out_path.open("w", newline="") as fh:
-        w = csv.writer(fh, delimiter="\t")
+        w = csv.writer(fh, delimiter="\t", lineterminator="\n")
         w.writerow(["instance", "chain", "res_id", "ins_code", "res_name",
                     "sasa_a2", "rsa", "is_exposed"])
         with Pool(args.jobs) as pool:

@@ -48,7 +48,6 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 
-import biotite.structure as struc
 import biotite.structure.io.pdbx as pdbx_io
 
 WATER = frozenset({"HOH", "DOD", "WAT", "H2O"})
@@ -99,8 +98,8 @@ def build(
     n_ok = n_res = n_epi = 0
 
     with ep_path.open("w", newline="") as ep_f, st_path.open("w", newline="") as st_f:
-        ep = csv.writer(ep_f, delimiter="\t")
-        st = csv.writer(st_f, delimiter="\t")
+        ep = csv.writer(ep_f, delimiter="\t", lineterminator="\n")
+        st = csv.writer(st_f, delimiter="\t", lineterminator="\n")
         ep.writerow(["instance", "chain", "res_id", "ins_code", "res_name", "is_epitope"])
         st.writerow([
             "instance", "pdb_id", "antigen_chains", "antibody_chains",

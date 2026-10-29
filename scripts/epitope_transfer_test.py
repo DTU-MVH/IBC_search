@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import random
 import subprocess
 import sys
@@ -177,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- phase 3: per-motif transfer rate, by class ---------------------
     with args.out.open("w", newline="") as fh:
-        w = csv.writer(fh, delimiter="\t")
+        w = csv.writer(fh, delimiter="\t", lineterminator="\n")
         w.writerow(["query_antigen", "query_string", "motif_size", "motif_class",
                     "epitope_coverage_of_motif", "n_hits_kept", "n_matched_exposed",
                     "n_matched_epitope", "epitope_transfer"])

@@ -180,7 +180,7 @@ def process(
 
     out = results_dir / out_name
     with out.open("w", newline="") as fh:
-        w = csv.writer(fh, delimiter="\t")
+        w = csv.writer(fh, delimiter="\t", lineterminator="\n")
         w.writerow([
             "motif_rank", "idf_z", "query_residues", "motif_size",
             "patch_id", "hit_tid", "hit_pdb_id", "hit_chains",
