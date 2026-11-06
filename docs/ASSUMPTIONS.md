@@ -388,6 +388,83 @@ centre order. Status: **verified**; tested at 1, 2 and 4 workers.
 
 ---
 
+## 3e. `few_balls_search` background selection
+
+**A-3e.1 The background set is the SAME SIZE as the annotated set, with a
+floor of 5.** `few_balls_search` places one ball per annotated residue and
+`max(n_annotated_balls, min_background_balls)` background balls on the same
+structure. Status: **proposed**. The count matches the number of annotated
+balls actually PLACED, not the number of annotated residues requested, because
+a residue that can take no ball centre produces no motif and would otherwise
+inflate the background. Where the floor binds, the two classes are
+deliberately unequal, the manifest records `classes_equal_size = false` and
+the run warns; pooling raw counts across structures without weighting by class
+size would then over-represent the background of sparsely annotated
+structures.
+
+**A-3e.2 Background centres are chosen by greedy farthest-point sampling,
+with the annotated centres already in the chosen set.** Status: **proposed**.
+Each pick maximises the distance to the NEAREST already-chosen centre, which
+is the Gonzalez k-centre heuristic and not a maximisation of total or mean
+distance. Seeding the annotated centres before the first pick is what pushes
+the background away from the annotated sites; without it the background would
+be dispersed but free to sit on top of them. Ties break toward the lower
+residue index, so the selection is reproducible and independent of worker
+count. The achieved minimum separation, and the minimum distance from any
+background centre to any annotated centre, are both recorded per run, so
+"spread out" is a measured property rather than a claim.
+
+**A-3e.3 The background is stratified by burial, in the protein's own
+proportions.** Status: **proposed, and load-bearing**. Candidates are split
+into buried (RSA < `background_rsa_threshold`), exposed and RSA-unknown, and
+each stratum receives a share of the background balls proportional to its
+share of the candidate pool, by largest-remainder apportionment so the parts
+sum exactly. A non-empty stratum is guaranteed at least one ball where the
+budget allows.
+
+This is not a refinement of A-3e.2 but a correction to it. Farthest-point
+sampling maximises separation, and in a globular object the points furthest
+apart lie on the hull, so an unstratified background is a SURFACE sample.
+Annotated sites — active sites, metal-coordination sites, interfaces — are
+frequently clefts and pockets, so comparing them against a surface sample
+would confound annotation with burial. That is the same artifact A-3d.7 had
+to undo once already, where the apparent burial of high-scoring residues
+moved from 0.071 to 0.230 mean RSA once search effort was divided out. The
+stratification is therefore on by default and `--no-background-stratify`
+carries a warning in its help text.
+
+RSA-unknown is a third stratum rather than being folded into either side or
+dropped: a residue whose exposure could not be computed is a different fact
+from a buried one, and dropping it would quietly remove unresolved side
+chains and parse failures from the background universe.
+
+**A-3e.4 Only the annotated residues themselves are excluded from the
+background; residues merely INSIDE an annotated ball are not.** Status:
+**proposed, measured rather than prevented**. Excluding ball members would be
+a second, hidden filter on where the background may sit, and its reach would
+grow with the radius. The dispersion objective already pushes the background
+away from annotated centres. The number of background seeds that nonetheless
+landed inside an annotated ball is reported per run
+(`n_background_seeds_inside_an_annotated_ball`, counted at the smallest
+configured radius), so the consequence of this choice is visible in the
+output instead of being invisible in the code.
+
+**A-3e.5 An absent annotation list is an error, not a whole-protein scan.**
+Status: **decided**. `few_balls_search` is defined by an annotated class, so
+with no `--seed-residues` there is nothing to match and nothing to control.
+Falling back to seeding every residue would produce a table that looks like a
+few-balls run and answers `dumb_search`'s question instead. A structure whose
+annotations are all absent from the coordinates is a different case: it still
+receives its floor of background balls, but the manifest records
+`n_annotated_balls = 0` and the run warns that those balls control for
+nothing and should not be pooled with structures that have both classes.
+
+**A-3e.6 Membership is untouched.** Status: **decided**, consistent with
+A-3.x. A ball collects every eligible residue within the radius regardless of
+class, so a background ball may contain annotated residues and vice versa.
+Nothing is deduplicated. The classes differ in where their centres are, and
+in nothing else.
+
 ## 3b. FoldDisco handoff
 
 **A-3b.1 Query token grammar** is `<single-char chain><non-negative int>`.

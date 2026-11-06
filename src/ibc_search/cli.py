@@ -55,6 +55,7 @@ from .config import (
     resolve_database,
 )
 from .dumb_search import run_dumb_search
+from .few_balls_search import run_few_balls_search
 from .errors import IbcSearchError
 from .exposure import compute_exposure
 from .logging_utils import setup_logging
@@ -195,6 +196,56 @@ def build_parser() -> argparse.ArgumentParser:
              "entry (e.g. a `11KP-assembly1.cif.gz` whose annotations are "
              "filed under `11KP`). Defaults to the file stem")
 
+    few = sub.add_parser(
+        "few-balls-search",
+        help="one ball per annotated residue plus an equal, dispersed "
+             "background set on the same protein",
+        description=(
+            "The few_balls_search method. Place one ball on every annotated "
+            "residue, then place the SAME NUMBER of further balls elsewhere "
+            "on the same protein, chosen by farthest-point sampling so they "
+            "are spread out in three dimensions and stratified by solvent "
+            "accessibility so they span buried and exposed positions in the "
+            "protein's own proportions. A floor of --min-background balls "
+            "applies however few annotations there are. Ball geometry and "
+            "membership are identical to `scan` and `dumb-search`; no member "
+            "is filtered and nothing is deduplicated. The point is an "
+            "internal control: both classes come from one structure, one "
+            "radius and one search, so a difference between them cannot be "
+            "explained by fold, motif count or search effort. Every motif is "
+            "labelled `annotated` or `background` in the seed_class column, "
+            "which downstream analysis must read rather than infer."
+        ),
+    )
+    _add_structure_arguments(few)
+    few.add_argument(
+        "--seed-residues", type=Path, default=None, metavar="TSV",
+        help="REQUIRED. The annotated residues, as for `dumb-search`. This "
+             "method is defined by an annotated set, so an absent list is an "
+             "error rather than a fallback to every residue")
+    few.add_argument(
+        "--seed-structure-id", default=None, metavar="ID",
+        help="the ID to match the seed table's pdb_id/instance column "
+             "against, when the structure file is not named after the entry "
+             "(e.g. `11KP-assembly1.cif.gz` filed under `11KP`)")
+    few.add_argument(
+        "--min-background", type=int, default=None, metavar="N",
+        help="floor on the background count, however few annotated residues "
+             "there are (default: [few_balls_search].min_background_balls). "
+             "Where it binds, the two classes are deliberately unequal and "
+             "the manifest says so")
+    few.add_argument(
+        "--background-rsa", type=float, default=None, metavar="FRAC",
+        help="the buried/exposed boundary for stratifying the background "
+             "(default: [few_balls_search].background_rsa_threshold)")
+    few.add_argument(
+        "--no-background-stratify", action="store_true",
+        help="take whatever farthest-point sampling returns instead of "
+             "matching the protein's buried/exposed composition. NOT "
+             "advised: farthest-point sampling favours the hull, so the "
+             "background becomes a surface sample and burial is confounded "
+             "with annotation")
+
     show = sub.add_parser("show-config", help="print the resolved configuration")
     show.add_argument("-c", "--config", type=Path, default=None)
     show.add_argument("--set", action="append", default=None, metavar="section.key=value")
@@ -322,6 +373,14 @@ def _apply_cli_to_config(args: argparse.Namespace, config: dict[str, Any]) -> No
         config["ball_search"]["seed_rounds"] = int(args.seed_rounds)
     if getattr(args, "seed_structure_id", None):
         config["ball_search"]["seed_structure_id"] = str(args.seed_structure_id)
+    if getattr(args, "min_background", None) is not None:
+        config["few_balls_search"]["min_background_balls"] = int(
+            args.min_background)
+    if getattr(args, "background_rsa", None) is not None:
+        config["few_balls_search"]["background_rsa_threshold"] = float(
+            args.background_rsa)
+    if getattr(args, "no_background_stratify", False):
+        config["few_balls_search"]["background_stratify_by_burial"] = False
     if getattr(args, "seed_rsa", None) is not None:
         config["ball_search"]["seed_rsa_threshold"] = float(args.seed_rsa)
     if getattr(args, "workers", None) is not None:
@@ -588,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_scan(args, full_command)
         if args.command == "dumb-search":
             return cmd_scan(args, full_command, method=run_dumb_search)
+        if args.command == "few-balls-search":
+            return cmd_scan(args, full_command, method=run_few_balls_search)
         if args.command == "show-config":
             return cmd_show_config(args)
         if args.command == "list-databases":

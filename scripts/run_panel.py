@@ -54,7 +54,10 @@ def _run_one(task: tuple) -> tuple[str, bool, str]:
                 # The panel knows the entry identity; the filename may not
                 # carry it (biological assemblies are `<id>-assembly1`).
                 "--seed-structure-id", inst] if seed_residues else [])
-            + (["--seed-rounds", str(seed_rounds)] if seed_rounds else []),
+            # --seed-rounds belongs to dumb-search only: few-balls-search
+            # has no expansion rounds and would reject the flag.
+            + (["--seed-rounds", str(seed_rounds)]
+               if seed_rounds and method == "dumb-search" else []),
             stdout=log, stderr=subprocess.STDOUT, cwd=str(REPO), env=env,
         )
         if scan.returncode != 0:
@@ -83,12 +86,17 @@ def main(argv: list[str] | None = None) -> int:
                          "one structure's output files")
     ap.add_argument("--radius", type=float, required=True,
                     help="ball radius in Angstroms for the scan")
-    ap.add_argument("--method", choices=("scan", "dumb-search"),
+    ap.add_argument("--method",
+                    choices=("scan", "dumb-search", "few-balls-search"),
                     default="scan",
                     help="extraction method. `scan` is the filtered ball "
                          "search; `dumb-search` places one ball per residue "
                          "with no thresholds and so emits several times more "
-                         "queries per structure [scan]")
+                         "queries per structure; `few-balls-search` places "
+                         "one ball per annotated residue plus an equal, "
+                         "spatially dispersed background set on the same "
+                         "structure, which needs --seed-residues and emits "
+                         "far FEWER queries than either [scan]")
     ap.add_argument("--seed-rounds", type=int, default=None, metavar="N",
                     help="rounds of seeding with --seed-residues; 2 also "
                          "seeds every residue inside a round-1 ball")

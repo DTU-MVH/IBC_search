@@ -161,6 +161,62 @@ Motif IDs carry a `d` (`1CRN_m1_r6_d00042`) where `scan` writes a `p`, and the
 run manifest records `ball_search.method = "dumb_search"`, so the two methods'
 outputs can never be confused once separated from their directories.
 
+### `few_balls_search`: annotated balls plus a matched background
+
+```bash
+PYTHONPATH=src .venv/bin/python -m ibc_search few-balls-search \
+  investigation_databases/zincfingers/structures/12UM.cif.gz \
+  --radius 5.5 -o results/12um_few \
+  --seed-residues investigation_databases/zincfingers/annotated_residues.tsv \
+  --seed-structure-id 12UM
+```
+
+Places one ball on every annotated residue, then the **same number** of
+further balls elsewhere on the same protein. So eight annotated zinc-finger
+residues give eight annotated balls and eight background balls, sixteen
+motifs in total. A floor of five background balls applies however few
+annotations a structure has.
+
+The point is an **internal control**. Comparing a seeded run against a
+separate background run confounds the annotation with fold, resolution,
+deposition year and -- measured, and largest of all -- how many motifs each
+residue happens to sit in. Here both classes come from one structure, one
+radius, one index and one search, in equal number, so none of those can
+explain a difference between them.
+
+The background balls are chosen to be spread out *and* to represent the
+protein rather than only its outside:
+
+- **Spread out** by greedy farthest-point sampling: repeatedly take the
+  residue whose nearest already-chosen centre is furthest away. The annotated
+  centres are in the chosen set before the first pick, so the background is
+  pushed away from the annotated sites as well as from itself.
+- **Representative** by stratifying candidates into buried, exposed and
+  RSA-unknown and giving each stratum a share proportional to its own share
+  of the candidate pool. This is load-bearing, not a refinement: in a
+  globular object the points furthest apart are the ones on its hull, so
+  unstratified farthest-point sampling returns a *surface* sample. Annotated
+  sites are often clefts and pockets, so that would confound annotation with
+  burial.
+
+Every motif is labelled in a `seed_class` column of `patches.tsv`, as
+`annotated` or `background`. **Downstream analysis must read that column**
+rather than infer the class from a patch ID or by re-deriving it from the
+annotation table. Motif IDs carry an `f` (`12UM_m1_r5.5_f00007`) where `scan`
+writes `p` and `dumb-search` writes `d`.
+
+Nothing is filtered or deduplicated: a ball keeps every residue inside it,
+annotated or not, buried or not. An annotated ball and a background ball may
+overlap, and the run manifest reports how many background seeds landed inside
+an annotated ball, together with the dispersion actually achieved and the
+per-stratum request and delivery. Where the protein cannot supply the
+requested background count, or where the floor makes the two classes unequal,
+the manifest says so and the run warns rather than quietly returning a
+smaller set.
+
+A `few_balls_search` motif is a ball of residues. It is not a surface patch,
+not an epitope, and establishes nothing about antigenicity.
+
 ### Inspect configuration and the FoldDisco contract
 
 ```bash
@@ -701,14 +757,19 @@ docs/ASSUMPTIONS.md          assumptions register + scientific limitations
 docs/FOLDDISCO_CONTRACT.md   the verified FoldDisco interface and the evidence
 src/ibc_search/
     data/default.toml        defaults with units, provenance and status markers
-    cli.py                   scan / dumb-search / list-databases / show-config /
+    cli.py                   scan / dumb-search / few-balls-search /
+                             list-databases / show-config /
                              folddisco-info / folddisco-search
     config.py                loading, overrides, validation
     structure_io.py          input resolution, fetching, parsing, quality flags
     residue_id.py            stable identity + original/internal/query mapping
     exposure.py              SASA and RSA
     ball_search_algo.py      the extraction algorithm
+    ball_placement.py        shared ball placement: member universe, centres,
+                             patches -- used by every method below
     dumb_search.py           the dumb_search baseline: one ball per residue
+    few_balls_search.py      annotated balls plus an equal, dispersed
+                             background set on the same structure
     folddisco_contract.py    query emission and hit round-trip (no search)
     outputs.py               tables and the query file
     manifest.py              run manifest

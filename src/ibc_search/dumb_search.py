@@ -66,25 +66,15 @@ from typing import Any
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .ball_search_algo import (
-    BallCenter,
-    BallSearchResult,
-    Patch,
-    PatchMember,
-    _finalise_contract,
-    _member_set_hash,
-    _patch_metrics,
-    _segment_structure,
-    compute_ball_center,
+from .ball_placement import (
+    POLYMER_CLASSES,
+    build_member_universe,
+    build_patches,
+    place_centers,
 )
-from .config import scale_label
-from .errors import Missing
+from .ball_search_algo import BallSearchResult, Patch, compute_ball_center
 from .exposure import ExposureResult
-from .structure_io import (
-    RESIDUE_CLASS_NONSTANDARD,
-    RESIDUE_CLASS_STANDARD,
-    ParsedStructure,
-)
+from .structure_io import ParsedStructure
 
 METHOD_NAME = "dumb_search"
 
@@ -237,38 +227,16 @@ def run_dumb_search(
     max_size = int(bs["max_patch_size"])
 
     warnings: list[str] = []
-    timings: dict[str, float] = {}
-    polymer_classes = {RESIDUE_CLASS_STANDARD, RESIDUE_CLASS_NONSTANDARD}
+    polymer_classes = POLYMER_CLASSES
 
-    # --- member universe: every polymer residue -------------------------
+    # --- member universe and the KD-tree over it -------------------------
     #
-    # The same residue-class switches as the ball search, because they say
-    # what counts as part of the protein, which is a parsing question rather
-    # than one of the filtering knobs this module exists to remove.
-    t0 = time.perf_counter()
-    eligible_res = np.zeros(len(parsed.residues), dtype=bool)
-    for i, rec in enumerate(parsed.residues):
-        if rec.residue_class not in polymer_classes:
-            continue
-        if (
-            rec.residue_class == RESIDUE_CLASS_NONSTANDARD
-            and not bs["include_nonstandard_as_member"]
-        ):
-            continue
-        if bs["members_restricted_to_scanned_chains"] and not rec.is_scanned_chain:
-            continue
-        eligible_res[i] = True
-
-    eligible_atom_idx = np.flatnonzero(eligible_res[parsed.atom_res_index])
-    if eligible_atom_idx.size == 0:
-        raise ValueError(
-            "no eligible heavy atoms for neighbour search; check chain "
-            "selection and [ball_search] residue-class switches"
-        )
-    eligible_coords = parsed.coords[eligible_atom_idx]
-    eligible_res_of_atom = parsed.atom_res_index[eligible_atom_idx]
-    tree = cKDTree(eligible_coords)
-    timings["build_kdtree_s"] = time.perf_counter() - t0
+    # Shared with every other ball-placing method: what counts as part of the
+    # protein is a parsing question, not one of the filtering knobs this
+    # module exists to remove. See ibc_search.ball_placement.
+    universe, timings = build_member_universe(parsed, config)
+    eligible_res_of_atom = universe.eligible_res_of_atom
+    tree = universe.tree
 
     # --- optional seed restriction ---------------------------------------
     #
@@ -363,47 +331,12 @@ def run_dumb_search(
                 )
 
     # --- the walk: one centre per residue, N-terminus to C-terminus ------
-    t0 = time.perf_counter()
-    centers: dict[int, BallCenter] = {}
-    walk: list[int] = []
-    n_no_center = 0
-    for i, rec in enumerate(parsed.residues):
-        if not rec.is_scanned_chain:
-            continue
-        if seed_keys is not None and (
-            rec.rid.auth_chain_id, rec.rid.auth_seq_id
-        ) not in seed_keys:
-            continue
-        if (
-            rec.residue_class == RESIDUE_CLASS_NONSTANDARD
-            and not bs["include_nonstandard_as_seed"]
-        ):
-            continue
-        if rec.residue_class not in polymer_classes:
-            continue
-        center = compute_ball_center(parsed, i, center_mode)
-        if center is None:
-            # No CB, no complete backbone, no CA. The walk steps over this
-            # residue rather than inventing a position for it; it can still be
-            # a member of its neighbours' balls.
-            n_no_center += 1
-            warnings.append(
-                f"residue {rec.rid.label()} ({rec.rid.res_name}) has no CB, no "
-                "complete backbone and no CA; no ball centre could be placed "
-                "and the walk skipped it (no coordinates were fabricated)"
-            )
-            continue
-        centers[i] = center
-        walk.append(i)
-    timings["place_centers_s"] = time.perf_counter() - t0
-
+    centers, walk, n_no_center, place_warnings, place_timings = place_centers(
+        parsed, config, seed_keys=seed_keys
+    )
+    warnings.extend(place_warnings)
+    timings.update(place_timings)
     n_virtual = sum(1 for c in centers.values() if c.is_virtual)
-    if n_virtual:
-        warnings.append(
-            f"{n_virtual} of {len(centers)} ball centres are VIRTUAL "
-            "(constructed from backbone geometry, mostly glycine); they are "
-            "flagged per patch in the output"
-        )
 
     stats: dict[str, Any] = {
         "method": METHOD_NAME,
@@ -443,117 +376,17 @@ def run_dumb_search(
             stats=stats,
         )
 
-    center_array = np.array([centers[i].position for i in walk])
-
     # --- one ball per centre, per radius ---------------------------------
-    all_patches: list[Patch] = []
-    for radius in [float(r) for r in bs["radii_angstrom"]]:
-        t_radius = time.perf_counter()
-        neighbour_lists = tree.query_ball_point(
-            center_array, r=radius, workers=workers
-        )
-
-        radius_patches: list[Patch] = []
-        n_oversized = 0
-        for step, seed_i in enumerate(walk):
-            hits = np.asarray(neighbour_lists[step], dtype=np.int64)
-            if hits.size == 0:
-                continue
-            center = center_array[step]
-            dists = np.linalg.norm(eligible_coords[hits] - center, axis=1)
-            res_of_hit = eligible_res_of_atom[hits]
-
-            # Nearest hit atom per residue: sort by (residue, distance) and
-            # take the first entry of each residue block. Same membership rule
-            # as the ball search -- a residue joins on its closest heavy atom.
-            order = np.lexsort((dists, res_of_hit))
-            sorted_res = res_of_hit[order]
-            first = np.concatenate(([True], sorted_res[1:] != sorted_res[:-1]))
-            sel_positions = order[first]
-            sel_res = sorted_res[first]
-            sel_atom_global = eligible_atom_idx[hits[sel_positions]]
-            sel_dist = dists[sel_positions]
-
-            members = tuple(
-                PatchMember(
-                    residue_index=int(res_i),
-                    selecting_atom_name=parsed.atom_name_at(int(atom_g)),
-                    selecting_atom_distance=float(dist),
-                    rsa=exposure.rsa_value_or_none(int(res_i)),
-                    rsa_missing_reason=_missing_reason(exposure, int(res_i)),
-                    is_seed=(int(res_i) == seed_i),
-                )
-                for res_i, atom_g, dist in sorted(
-                    zip(sel_res, sel_atom_global, sel_dist),
-                    key=lambda t: int(t[0]),
-                )
-            )
-
-            residue_indices = [m.residue_index for m in members]
-            n_seg, seg_lengths, gaps, chains = _segment_structure(
-                parsed, residue_indices
-            )
-            diameter, rg, compactness = _patch_metrics(
-                parsed, residue_indices, radius
-            )
-            if len(members) > max_size:
-                n_oversized += 1
-            radius_patches.append(
-                Patch(
-                    patch_id="",
-                    radius=radius,
-                    scale=scale_label(config, radius),
-                    center_mode=center_mode,
-                    members=members,
-                    seed_residue_indices=(seed_i,),
-                    seed_center_kinds=(centers[seed_i].kind,),
-                    member_set_hash=_member_set_hash(parsed, residue_indices),
-                    n_segments=n_seg,
-                    segment_lengths=seg_lengths,
-                    author_numbering_gaps=gaps,
-                    chains=chains,
-                    spatial_diameter=diameter,
-                    radius_of_gyration=rg,
-                    compactness_ratio=compactness,
-                    # Nothing is dropped here, so these are structurally zero
-                    # rather than coincidentally zero.
-                    n_dropped_buried=0,
-                    n_dropped_disconnected=0,
-                    n_components_before_connectivity=0,
-                )
-            )
-
-        stats["per_radius"][f"{radius:g}"] = {
-            "n_balls_placed": len(walk),
-            "n_patches": len(radius_patches),
-            "n_oversized_flagged": n_oversized,
-            "seconds": time.perf_counter() - t_radius,
-        }
-        if n_oversized:
-            warnings.append(
-                f"radius {radius:g} A: {n_oversized} motif(s) exceed "
-                f"max_patch_size={max_size}; they are kept in the table but no "
-                "FoldDisco query is emitted for them"
-            )
-        all_patches.extend(radius_patches)
-        timings[f"dumb_search_r{radius:g}_s"] = (
-            stats["per_radius"][f"{radius:g}"]["seconds"]
-        )
-
-    # --- IDs and the FoldDisco contract ----------------------------------
     #
-    # No canonical re-sort: the patches are already in (radius, walk order),
-    # which is the order the method is defined by, and the walk order does not
-    # depend on worker count. IDs carry a `d` to mark the method, so a
-    # dumb-search table and a scan table never collide.
-    t0 = time.perf_counter()
-    structure_id = parsed.source.structure_id
-    for n, patch in enumerate(all_patches):
-        patch.patch_id = (
-            f"{structure_id}_m{parsed.model}_r{patch.radius:g}_d{n:05d}"
-        )
-        _finalise_contract(parsed, patch, max_size)
-    timings["finalise_s"] = time.perf_counter() - t0
+    # `d` marks the method in every patch_id, so a dumb-search table and a
+    # scan table can never collide on an id. Every seed here is the same kind
+    # of seed, so no seed_class is written.
+    all_patches, per_radius, patch_warnings, patch_timings = build_patches(
+        parsed, exposure, config, universe, centers, walk, id_marker="d"
+    )
+    warnings.extend(patch_warnings)
+    timings.update(patch_timings)
+    stats["per_radius"] = per_radius
 
     stats["n_patches_total"] = len(all_patches)
     stats["n_patches_discontinuous"] = sum(
@@ -570,15 +403,3 @@ def run_dumb_search(
         stats=stats,
     )
 
-
-def _missing_reason(exposure: ExposureResult, res_i: int) -> str:
-    """Why this residue has no RSA, or ``""`` when it has one.
-
-    A missing RSA changes nothing about membership here -- no threshold is
-    applied -- but the reason is still carried into the table, because a blank
-    RSA column and an untestable one are different facts.
-    """
-    if exposure.rsa_value_or_none(res_i) is not None:
-        return ""
-    value = exposure.rsa[res_i]
-    return value.reason if isinstance(value, Missing) else "unknown"

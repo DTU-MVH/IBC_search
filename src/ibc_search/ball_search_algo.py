@@ -156,6 +156,15 @@ class Patch:
     n_dropped_disconnected: int
     n_components_before_connectivity: int
     cluster_id: str = ""
+    seed_class: str = ""
+    """What KIND of seed this ball was placed on, for methods that place more
+    than one kind -- ``few_balls_search`` writes ``annotated`` or
+    ``background``. Blank for methods where every seed is the same kind, since
+    a label that is always identical carries no information. Downstream
+    analysis must read this column rather than infer the class from the
+    patch_id or from a residue list, which is what makes the annotated/
+    background comparison auditable."""
+
     folddisco_expressible: bool = True
     folddisco_block_reason: str = ""
     query_string: str = ""

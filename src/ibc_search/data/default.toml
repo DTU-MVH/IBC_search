@@ -196,6 +196,38 @@ workers = 1                     # unit: count      | provenance: this impl | sta
 max_workers_cap = 8             # unit: count      | provenance: this impl | status: proposed
 
 
+[few_balls_search]
+# `few_balls_search` places one ball on every annotated residue and the SAME
+# NUMBER of further balls elsewhere on the same protein, so each structure
+# carries its own internal control. See src/ibc_search/few_balls_search.py.
+
+# Floor on the background count, however few annotated residues a structure
+# has. A structure with 2 annotations would otherwise contribute a 2-against-2
+# within-structure comparison, which is not a comparison. This is a
+# statistical minimum, not a geometric one, and where it binds the two classes
+# are deliberately UNEQUAL -- weight by class size rather than pooling.
+min_background_balls = 5        # unit: balls | provenance: this impl | status: proposed
+
+# Split the background between buried and exposed candidates, in proportion to
+# the protein's own composition, instead of taking whatever farthest-point
+# sampling returns.
+#
+# This is load-bearing, not a refinement. Farthest-point sampling maximises
+# separation, and in a globular object the points furthest apart are the ones
+# on its hull, so an unstratified "background" is a SURFACE sample. Annotated
+# sites are frequently clefts and pockets, so comparing them against a surface
+# sample would confound annotation with burial -- the same artifact that
+# normalising hit counts by motif coverage already had to undo once, where
+# background mean RSA for the top-scoring residues moved 0.071 -> 0.230.
+background_stratify_by_burial = true  # unit: bool | provenance: this impl | status: proposed
+
+# The buried/exposed boundary for that stratification. Matches
+# [ball_search].seed_rsa_threshold so that "exposed" means one thing across
+# the codebase; it is a separate key because changing one should not silently
+# change the other. RSA-unknown residues form a third stratum rather than
+# being folded into either side or dropped.
+background_rsa_threshold = 0.20  # unit: fraction | provenance: this impl | status: proposed
+
 [folddisco]
 # Handoff description only. THIS COMPONENT RUNS NO SEARCH.
 # Values verified against the installed build; see docs/FOLDDISCO_CONTRACT.md.

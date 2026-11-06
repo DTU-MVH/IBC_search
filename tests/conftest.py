@@ -305,6 +305,41 @@ def waters_and_ligand_pdb(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def buried_core_pdb(tmp_path: Path) -> Path:
+    """A globule with a genuinely buried core: a shell around a centre.
+
+    Residue A1 sits at the origin and is enclosed by a shell of residues on a
+    sphere around it, so its solvent accessibility is low while the shell's is
+    high. Needed by anything that must prove it reached an interior position
+    rather than only the surface -- on the linear and hairpin fixtures every
+    residue is exposed, so a burial test there would pass for the wrong
+    reason.
+
+    The shell uses a Fibonacci sphere so the points are near-evenly spread and
+    the construction carries no preferred direction.
+    """
+    import math
+
+    residues = [Residue("A", 1, "ALA", backbone_atoms(np.zeros(3)))]
+    n_shell = 60
+    radius = 7.0
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    for i in range(n_shell):
+        y = 1.0 - 2.0 * i / (n_shell - 1)
+        r = math.sqrt(max(0.0, 1.0 - y * y))
+        theta = golden * i
+        origin = np.array([
+            radius * r * math.cos(theta),
+            radius * y,
+            radius * r * math.sin(theta),
+        ])
+        residues.append(
+            Residue("A", i + 2, "ALA", backbone_atoms(origin))
+        )
+    return write_pdb(tmp_path / "buried_core.pdb", [Model(residues)])
+
+
+@pytest.fixture
 def base_config(tmp_path: Path) -> dict:
     """Default config, pointed at a temporary output/cache directory."""
     from ibc_search.config import load_config

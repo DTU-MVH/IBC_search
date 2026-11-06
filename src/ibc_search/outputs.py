@@ -58,7 +58,7 @@ PATCH_COLUMNS = [
     "patch_id", "structure_id", "model", "radius_angstrom", "scale",
     "center_mode", "n_members", "n_segments", "segment_lengths",
     "author_numbering_gaps", "is_discontinuous", "chains",
-    "seed_residue_labels", "seed_center_kinds", "n_seeds",
+    "seed_residue_labels", "seed_center_kinds", "n_seeds", "seed_class",
     "spatial_diameter_angstrom", "radius_of_gyration_angstrom",
     "compactness_ratio", "member_set_hash", "cluster_id",
     "n_members_dropped_buried", "n_members_dropped_disconnected",
@@ -201,6 +201,8 @@ def patch_rows(
                 "seed_residue_labels": seed_labels,
                 "seed_center_kinds": patch.seed_center_kinds,
                 "n_seeds": len(patch.seed_residue_indices),
+                # Blank unless the method places more than one kind of seed.
+                "seed_class": patch.seed_class,
                 "spatial_diameter_angstrom": patch.spatial_diameter,
                 "radius_of_gyration_angstrom": patch.radius_of_gyration,
                 "compactness_ratio": patch.compactness_ratio,
