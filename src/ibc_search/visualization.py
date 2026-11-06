@@ -70,6 +70,27 @@ THEMES = {
 }
 
 
+def _wrap_to_width(text: str, fig_width_inches: float,
+                   fontsize: float, left_margin: float = 0.03) -> str:
+    """Wrap a caption to the figure's own width.
+
+    Figure text is placed in figure coordinates and matplotlib does not wrap
+    it, so a long footnote silently runs past the right edge -- and the part
+    that disappears is the end of the sentence, which in this repository is
+    reliably the caveat. The character budget comes from an average glyph
+    width of ~0.55 em, which is approximate but only ever errs toward
+    wrapping early.
+    """
+    import textwrap
+
+    usable_inches = max(fig_width_inches * (1 - left_margin) - 0.2, 1.0)
+    chars = max(int(usable_inches * 72 / (fontsize * 0.55)), 20)
+    return "\n".join(
+        line for para in text.split("\n")
+        for line in textwrap.wrap(para, chars) or [""]
+    )
+
+
 def binned_point_plot(
     groups: Sequence[tuple[str, Sequence[tuple[str, Sequence[float]]]]],
     out_path: Path,
@@ -90,6 +111,7 @@ def binned_point_plot(
     min_for_summary: int = 5,
     trend: Sequence[float] | None = None,
     trend_label: str | None = None,
+    summary_ink: str = "summary",
 ) -> Path:
     """Draw one panel per group, one bin per structure within it.
 
@@ -100,6 +122,13 @@ def binned_point_plot(
     ``max_points`` subsamples the cloud per bin for legibility; the median and
     IQR are always computed on the **full** set, so the summary never depends
     on the subsample.
+
+    ``summary_ink`` picks the palette key for the summary line. The default
+    ``"summary"`` is the red used by the exploratory figures. The standard
+    run figure passes ``"variance"``, which draws the median in the same ink
+    as its spread bar -- black on the light surface, white on the dark one.
+    "Black" cannot be literal in both: on the dark surface a black line is
+    invisible, so the ink is the theme's, and the caption says which.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -181,7 +210,7 @@ def binned_point_plot(
             # the point cloud and its extent has to be guessed.
             ax.hlines([lo, hi], i - 0.10, i + 0.10, color=palette["variance"],
                       linewidth=1.0, alpha=0.95, zorder=3)
-            ax.hlines(bar, i - 0.30, i + 0.30, color=palette["summary"],
+            ax.hlines(bar, i - 0.30, i + 0.30, color=palette[summary_ink],
                       linewidth=2.4, zorder=4)
 
         # A fitted curve is drawn over the bins it was fitted on, so the
@@ -219,14 +248,17 @@ def binned_point_plot(
     lines = []
     if subtitle:
         lines.append(subtitle)
+    # Colour-neutral wording: the spread bar is white on the dark surface and
+    # black on the light one.
+    ink = "red" if summary_ink == "summary" else (
+        "black" if theme == "light" else "white")
+    note = (f"{ink} line: median of the top {top_fraction:.0%} of motifs; "
+            f"bar spans that decile"
+            if summary == "top_decile"
+            else f"{ink} line: median; vertical bar spans the IQR, with caps")
     if reference is not None:
-        # Colour-neutral wording: the spread bar is white on the dark
-        # surface and black on the light one.
-        note = (f"red line: median of the top {top_fraction:.0%} of motifs; "
-                f"bar spans that decile"
-                if summary == "top_decile"
-                else "red line: median; bar spans the IQR")
-        lines.append(f"dashed line: {reference_label}   {note}")
+        note = f"dashed line: {reference_label}   {note}"
+    lines.append(note)
     if lines:
         fig.text(0.012, 0.902, "\n".join(lines), fontsize=9.0,
                  color=palette["text_secondary"], ha="left", va="top")
@@ -235,13 +267,16 @@ def binned_point_plot(
         # Stated on the figure rather than only in the caption: a z-score
         # computed on a transformed quantity is not the same statistic as one
         # computed on the raw values, and a reader cannot tell which they are
-        # looking at from the axis alone.
+        # looking at from the axis alone. Wrapped to the canvas, because an
+        # unwrapped footnote runs off the right edge and the part that gets
+        # cut is the caveat.
+        footnote = _wrap_to_width(footnote, fig.get_figwidth(), fontsize=8.2)
         fig.text(0.012, 0.016, footnote, fontsize=8.2,
                  color=palette["text_secondary"], ha="left", va="bottom")
 
     fig.tight_layout(rect=(
-        0, 0.030 * (footnote.count("\n") + 1) + 0.025 if footnote else 0, 1,
-        0.845 if (title or subtitle or reference is not None) else 1))
+        0, 0.034 * (footnote.count("\n") + 1) + 0.022 if footnote else 0, 1,
+        0.845 if (title or subtitle or lines) else 1))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, facecolor=palette["surface"])
     plt.close(fig)
@@ -402,6 +437,129 @@ def value_strip_plot(
              fontsize=9.5, color=palette["text_secondary"], ha="left", va="top")
 
     fig.tight_layout(rect=(0, 0, 1, 0.90))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, facecolor=palette["surface"])
+    plt.close(fig)
+    return out_path
+
+
+COUNT_COLORS = ("#d9f0d3", "#8fd4ae", "#36a9a0", "#1f6fb5", "#143d8f")
+"""Low-to-high ramp for hit COUNTS: green -> teal -> blue.
+
+A sequential ramp, deliberately not the diverging red/grey used for
+z-scores, because the two quantities are not the same kind of thing. A
+z-score has a meaningful centre to diverge from; a count has a floor at zero
+and no centre, so its ramp runs one way.
+
+Lightness decreases monotonically along it -- measured, not asserted:
+0.884, 0.696, 0.437, 0.416, 0.320 in HLS. Two consequences are deliberate.
+The order survives greyscale printing, and "many hits" is the visually
+heavy end rather than the faint one, so the eye lands on the high counts.
+A green-to-blue ramp also separates under the common forms of colour
+blindness, where red-to-green does not. ``tests/test_visualization.py``
+checks the monotonicity, so a later edit to these five values cannot
+quietly break either property.
+"""
+
+
+def count_colormap(theme: str = "light"):
+    """The green->teal->blue ramp as a matplotlib colormap.
+
+    ``under`` is set to the surface colour so a count of zero reads as
+    absent rather than as the low end of the scale: a residue assessed and
+    matched by nothing is a different statement from a residue that merely
+    scored low, and :mod:`count_scoring` keeps them apart.
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+
+    cmap = LinearSegmentedColormap.from_list("ibc_counts", COUNT_COLORS)
+    return cmap.with_extremes(bad=THEMES[theme]["grid"])
+
+
+def count_heatmap(
+    rows: Sequence[tuple[str, Sequence[float]]],
+    out_path: Path,
+    *,
+    value_label: str = "distinct hits",
+    title: str | None = None,
+    subtitle: str | None = None,
+    footnote: str | None = None,
+    theme: str = "light",
+    max_width: int | None = None,
+) -> Path:
+    """Structures down, residue position across, colour = count.
+
+    ``rows`` is ``[(structure_name, [count per residue in sequence order]),
+    ...]``. Rows are ragged by nature -- chains differ in length -- and the
+    short ones are padded with NaN, drawn in the grid colour. Padding is
+    **not** drawn as zero: zero means "assessed, nothing matched", and a
+    position that does not exist in a chain has no count at all.
+
+    The x axis is residue **position within the row**, not a shared
+    alignment. Nothing here aligns sequences, so column *i* of two rows is
+    not a homologous site, and the axis label says so.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    palette = THEMES[theme]
+    if not rows:
+        raise ValueError("no rows to draw")
+
+    width = max(len(v) for _, v in rows)
+    if max_width is not None:
+        width = min(width, max_width)
+    grid = np.full((len(rows), width), np.nan)
+    for i, (_, values) in enumerate(rows):
+        vals = np.asarray(list(values)[:width], dtype=float)
+        grid[i, :vals.size] = vals
+
+    height = max(2.4, 0.22 * len(rows) + 1.9)
+    fig, ax = plt.subplots(figsize=(12.0, height))
+    fig.patch.set_facecolor(palette["surface"])
+    ax.set_facecolor(palette["surface"])
+
+    finite = grid[np.isfinite(grid)]
+    vmax = float(finite.max()) if finite.size else 1.0
+    im = ax.imshow(grid, aspect="auto", interpolation="nearest",
+                   cmap=count_colormap(theme), vmin=0.0, vmax=max(vmax, 1.0))
+
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([name for name, _ in rows], fontsize=7.5,
+                       color=palette["text_primary"])
+    ax.set_xlabel("residue position along the chain (NOT a sequence alignment: "
+                  "column i of two rows is not a homologous site)",
+                  fontsize=8.5, color=palette["text_secondary"], labelpad=7)
+    ax.tick_params(colors=palette["text_secondary"], length=0)
+    for side in ("top", "right", "left", "bottom"):
+        ax.spines[side].set_visible(False)
+
+    bar = fig.colorbar(im, ax=ax, pad=0.012, fraction=0.022)
+    bar.set_label(f"{value_label}  (green = few, blue = many)", fontsize=8.5,
+                  color=palette["text_secondary"])
+    bar.ax.tick_params(colors=palette["text_secondary"], length=0)
+    bar.outline.set_visible(False)
+
+    head = 0.0
+    if title:
+        fig.text(0.012, 0.985, title, fontsize=13,
+                 color=palette["text_primary"], ha="left", va="top")
+        head += 0.055
+    if subtitle:
+        subtitle = _wrap_to_width(subtitle, fig.get_figwidth(), fontsize=9.0)
+        fig.text(0.012, 0.985 - head, subtitle, fontsize=9.0,
+                 color=palette["text_secondary"], ha="left", va="top")
+        head += 0.030 * (subtitle.count("\n") + 1)
+    if footnote:
+        footnote = _wrap_to_width(footnote, fig.get_figwidth(), fontsize=8.2)
+        fig.text(0.012, 0.012, footnote, fontsize=8.2,
+                 color=palette["text_secondary"], ha="left", va="bottom")
+
+    fig.tight_layout(rect=(
+        0, 0.030 * (footnote.count("\n") + 1) + 0.015 if footnote else 0,
+        1, 1 - head - 0.02 if head else 1))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, facecolor=palette["surface"])
     plt.close(fig)

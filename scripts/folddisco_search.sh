@@ -23,8 +23,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-# The downloaded-database directory, one level above the repo.
-DB_DIR="${IBC_FOLDDISCO_DB_DIR:-$(cd -- "${REPO_ROOT}/.." && pwd)/folddisco_databases}"
+# The downloaded-database directory. An absolute default, NOT one derived
+# from the repository location: the indexes are 233 GB and live in the data
+# tree, so a "${REPO_ROOT}/.." path silently resolves to nothing the moment
+# the repository is moved -- which has already happened once.
+DB_DIR="${IBC_FOLDDISCO_DB_DIR:-${HOME}/documents_local_only/master_thesis_data_files/folddisco_databases}"
 ARCHIVE="${IBC_FOLDDISCO_ARCHIVE:-${DB_DIR}/pdb_folddisco.tar.lz4}"
 
 # The index table itself. FoldDisco also reads sidecars (.lookup/.offset/.type)
@@ -62,7 +65,50 @@ THREADS="${IBC_FOLDDISCO_THREADS:-1}"
 # THIS IS A RETRIEVAL CUTOFF AND IT CHANGES WHAT YOU SEE. A true match ranked
 # below N is not reported. Raise it, or pass --no-top, when recall matters
 # more than runtime.
-TOP="${IBC_FOLDDISCO_TOP:-40}"
+#
+# Raised from 40 to 700: at 40 the cap was MEASURED to be censoring nearly
+# every motif. Over the four completed runs, 72-98% of motifs came back with
+# at least 38 of their 40 slots filled -- PPI 97.8%, of which 91.5% sat at
+# exactly 40. A count that is truncated for almost every motif cannot say how
+# common that motif is, so it measures search effort instead. The headroom to
+# afford 700 comes from --num-residue below.
+TOP="${IBC_FOLDDISCO_TOP:-700}"
+
+# Skip candidate structures with more residues than this. FoldDisco's own
+# default is 50000, which excludes nothing in practice.
+#
+# This is a PERFORMANCE control that happens to also be a correctness one.
+# The match stage dominates the runtime (see --top above), and its cost is
+# driven by candidate bytes parsed: measured across 161 structures, runtime
+# correlated with candidate megabytes at r = 0.992, against 0.900 for query
+# count, at a throughput of 1.70 MB/s. What makes that expensive is a handful
+# of multi-model solution-NMR ensembles, which the count sums across models:
+# pdb2k0e is 160 models in 5.72 MB, pdb2m8l 100 models in 11.01 MB. Nothing
+# is cached, so each is re-parsed per query that retrieves it -- 2k0e was
+# retrieved 2613 times within the single invocation for 5N6Y alone.
+#
+# Measured on 20 queries of 5N6Y against the 230655-structure index:
+#
+#   --num-residue 50000   227.91 s   820 rows   250 distinct entries
+#   --num-residue  5000    55.65 s   820 rows   267 distinct entries
+#   --num-residue  2000     21.10 s   820 rows   323 distinct entries
+#
+# No hits are lost: --top always fills its N slots, so excluding an ensemble
+# promotes other candidates into it. The distinct-entry count therefore RISES,
+# which also relieves the ensemble inflation of per-residue hit counts (one
+# entry matching at slightly different residues in each of 160 models is
+# counted as many "distinct sites").
+#
+# WHAT IT COSTS: a legitimately large single-model structure -- a big
+# assembly, a long multi-domain chain -- is excluded too, and this threshold
+# is low enough to exclude some. That is a deliberate choice, not an
+# oversight. Raise it, or pass a large value, when whole-PDB recall over
+# large entries matters more than runtime.
+#
+# IT CHANGES WHICH CANDIDATES COME BACK, so runs made with different values
+# are not comparable with each other. The runs completed before this default
+# was introduced used FoldDisco's 50000.
+NUM_RESIDUE="${IBC_FOLDDISCO_NUM_RESIDUE:-2000}"
 
 # Per-match columns. `query_residues` is the reliable side of the round trip
 # (it echoes exactly what was sent); `matching_residues` is NOT reliably
@@ -88,8 +134,10 @@ search options:
   -t, --threads N        FoldDisco threads [1 -- see the note below]
   -o, --output PATH      hits file  [<results_dir>/folddisco_hits.tsv]
       --format-output S  comma-separated per-match columns
-      --top N            keep the top N structures per query by IDF [40]
+      --top N            keep the top N structures per query by IDF [700]
       --no-top           no cap -- see the warning below
+      --num-residue N    skip candidates over N residues [2000 -- see below]
+      --no-num-residue   no candidate size limit (FoldDisco's own 50000)
       --rmsd X           maximum RMSD cutoff
       --keep-raw         keep the unjoined FoldDisco output alongside the hits
       --strict           fail if FoldDisco emitted any torn (interleaved) row
@@ -106,6 +154,17 @@ minutes uncapped. The hash lookup is fast; the match stage loads and
 superposes every candidate, and a short motif matches much of the PDB. The
 cap is therefore on by default. It is a retrieval cutoff: a real match ranked
 below N is not reported.
+
+On --num-residue: the match stage's cost tracks candidate bytes parsed
+(r = 0.992 over 161 structures, 1.70 MB/s), and a few multi-model NMR
+ensembles dominate it -- the residue count is summed over models, so
+pdb2k0e's 160 models exceed any sane per-protein threshold. Nothing is
+cached, so each is re-parsed per query. On 20 queries of 5N6Y: 227.9 s at
+50000, 55.7 s at 5000, 21.1 s at 2000, with the SAME 820 hit rows and MORE
+distinct entries (250, 267, 323), because --top refills the freed slots.
+The default of 2000 also excludes some legitimately large single-model
+entries; that is accepted deliberately. Different values are not comparable
+with each other.
 
 On threads: the installed build does not write stdout line-atomically. At
 -t 10 roughly 0.5% of hit rows came back torn, differing run to run; at -t 1
@@ -525,6 +584,8 @@ cmd_search() {
             --format-output)    FORMAT_OUTPUT="$2"; shift 2 ;;
             --top)              TOP="$2"; shift 2 ;;
             --no-top)           TOP=""; shift ;;
+            --num-residue)      NUM_RESIDUE="$2"; shift 2 ;;
+            --no-num-residue)   NUM_RESIDUE=""; shift ;;
             --rmsd)             passthrough+=(--rmsd "$2"); shift 2 ;;
             --keep-raw)         keep_raw=1; shift ;;
             --no-exclude-self)  exclude_self=0; shift ;;
@@ -595,6 +656,14 @@ cmd_search() {
         note "         query. Expect this to run for a very long time."
     fi
 
+    local -a numres_arg=()
+    if [[ -n "${NUM_RESIDUE}" ]]; then
+        numres_arg=(--num-residue "${NUM_RESIDUE}")
+        note "  cand    skipping candidates over ${NUM_RESIDUE} residues (summed over models)"
+    else
+        note "  cand    no candidate size limit: FoldDisco's own 50000 applies"
+    fi
+
     "${FOLDDISCO}" query \
         -i "${INDEX}" \
         -q "${query_file}" \
@@ -602,6 +671,7 @@ cmd_search() {
         --header \
         --per-match \
         ${top_arg[@]+"${top_arg[@]}"} \
+        ${numres_arg[@]+"${numres_arg[@]}"} \
         --format-output "${FORMAT_OUTPUT}" \
         ${passthrough[@]+"${passthrough[@]}"} \
         > "${raw}"

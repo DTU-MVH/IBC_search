@@ -24,12 +24,16 @@ RENDER = REPO / "scripts" / "render_pymol.py"
 
 
 def _render(task: tuple) -> tuple[str, bool, str]:
-    inst, structure, scores_tsv, out_png, threshold, mode, pymol, has_epitope = task
+    (inst, structure, scores_tsv, out_png, threshold, mode, pymol,
+     has_epitope, score_column, top_fraction) = task
     cmd = [
         str(REPO / ".venv/bin/python"), str(RENDER), structure, scores_tsv,
         "--instance", inst, "-o", out_png,
         "--threshold", str(threshold), "--mode", mode,
+        "--score-column", score_column,
     ]
+    if top_fraction is not None:
+        cmd += ["--top-fraction", str(top_fraction)]
     if pymol:
         cmd += ["--pymol", pymol]
     if not has_epitope:
@@ -46,6 +50,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scores", type=Path, default=None,
                     help="residue_scores.tsv [<run_dir>/residue_scores.tsv]")
     ap.add_argument("--threshold", type=float, default=1.7)
+    ap.add_argument("--top-fraction", type=float, default=None, metavar="F",
+                    help="mark the top F of each structure's own scored "
+                         "residues instead of an absolute --threshold")
+    ap.add_argument("--score-column", default="max_motif_z",
+                    help="column in the scores file to colour by. A count "
+                         "run has no max_motif_z, so this must follow "
+                         "whichever table was handed in [max_motif_z]")
     ap.add_argument("--mode", choices=("prediction", "confusion"),
                     default="prediction")
     ap.add_argument("--figures-dir", default="00_figures",
@@ -94,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             inst, struct, str(scores_tsv),
             str(fig_dir / f"{inst}_motif_score.png"),
             args.threshold, args.mode, args.pymol, inst in labelled,
+            args.score_column, args.top_fraction,
         ))
 
     if not tasks:

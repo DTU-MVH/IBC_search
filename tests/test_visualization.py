@@ -63,3 +63,50 @@ def test_load_scored_groups_by_category_and_reports_missing(tmp_path, capsys):
     assert [g for g, _ in groups] == ["cat_a", "cat_b"]
     assert groups[0][1] == [("1ABC", [1.0, 2.0])]
     assert "2DEF" in capsys.readouterr().err
+
+
+def test_the_count_ramp_runs_green_to_blue_with_monotonic_lightness():
+    """Both properties the ramp claims, checked rather than asserted.
+
+    Monotonic lightness is what makes the order survive greyscale printing
+    and puts the visual weight on the high counts. The hue check is what
+    makes "green = few, blue = many" true of the actual values rather than
+    only of the caption.
+    """
+    import colorsys
+
+    import matplotlib.colors as mc
+
+    from ibc_search.visualization import COUNT_COLORS
+
+    hls = [colorsys.rgb_to_hls(*mc.to_rgb(c)) for c in COUNT_COLORS]
+    lightness = [l for _, l, _ in hls]
+    assert all(a > b for a, b in zip(lightness, lightness[1:])), lightness
+
+    # Hue in turns: green sits near 0.33, blue near 0.60-0.66.
+    hues = [h for h, _, _ in hls]
+    assert 0.25 <= hues[0] <= 0.42, f"low end should be green, got {hues[0]}"
+    assert 0.55 <= hues[-1] <= 0.72, f"high end should be blue, got {hues[-1]}"
+    assert all(a <= b + 1e-9 for a, b in zip(hues, hues[1:])), \
+        "hue must move green -> teal -> blue without doubling back"
+
+
+def test_count_heatmap_pads_short_rows_without_calling_them_zero(tmp_path):
+    """A position a chain does not have is not a count of zero.
+
+    Zero means assessed and unmatched. Padding is drawn in the grid colour
+    via the colormap's 'bad' entry, so the two cannot be confused.
+    """
+    import numpy as np
+
+    from ibc_search.visualization import count_colormap, count_heatmap
+
+    out = count_heatmap(
+        [("long", [1.0] * 10), ("short", [2.0] * 4)],
+        tmp_path / "hm.png", title="t")
+    assert out.is_file() and out.stat().st_size > 0
+
+    cmap = count_colormap("light")
+    bad = cmap(np.ma.masked_invalid([np.nan]))[0]
+    zero = cmap(0.0)
+    assert tuple(bad) != tuple(zero), "padding must not render as a zero count"

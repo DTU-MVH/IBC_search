@@ -416,10 +416,201 @@ per-residue mapping needs `--superpose` / `matching_coordinates`.
 The **query** side is reliable: all 111 930 query tokens resolved back to a
 residue identity with zero failures.
 
+**A-3b.7 The query file holds DISTINCT queries; the patch set still holds
+every patch.** Two patches can carry the identical residue set -- routinely
+under `dumb-search`, which deduplicates nothing, so balls centred on
+neighbouring residues of a helix enclose the same members. Searching that
+query twice returns byte-identical hits for twice the time, so
+`write_tables` emits each distinct query line once and `line_number` in the
+query index ties the sharing patches to it. Status: **verified** in test.
+
+MEASURED on the 5.5 A, 187-structure background run before the change: 51 of
+31,304 queries (0.16%) were repeats, spread across 32 of 60 structures
+sampled. The saving is small; the point is that it is free and that a
+duplicated search is pure waste.
+
+*What this does NOT fix:* `folddisco_search.sh` joins a hit back to every
+patch carrying its query string, and where that is more than one it writes
+them pipe-joined (`..._d00204|..._d00205`). Those rows are 0.43% of hits on
+that run. `count_scoring --attribution matched` **raises** on them, which
+aborted 113 of 187 structures; `--attribution motif` **silently skips**
+them. Deduplicating the query file does not change that mapping, because it
+is one query to many patches either way. The fix belongs in the consumer:
+split the joined id and credit each patch named.
+
+**A-3b.5 Which reference database is searched is a CHOICE, recorded by
+name.** Four are registered in `[folddisco.databases]`; `ibc-search
+list-databases` prints them. Status: **documented**.
+
+| name | contents | IDF parameters |
+|---|---|---|
+| `pdb` (default) | 230 655 deposited structures | fitted, calibration-checked |
+| `afdb_proteome` | 564 446 AlphaFold **predicted** models | none fitted |
+| `afdb_swissprot` | AlphaFold predicted models for reviewed UniProtKB | none fitted |
+| `sabdab2_antigen` | SAbDab2 antigen chains, epitope-labelled | fitted |
+
+A name resolves to an index **and** the parameters fitted against it,
+because IDF measures rarity over one index's contents and does not transfer.
+MEASURED on one 4-residue motif: the same query scores IDF **80.5** against
+`pdb`, **41.5** against `afdb_swissprot` and **16.2** against
+`afdb_proteome`. The two AFDB entries deliberately carry no `idf_params`, so
+`idf_zscore.py apply -d afdb_proteome` **refuses** instead of borrowing the
+PDB's; hit *counts* (`count_scoring.py`) need no fit and remain available.
+
+*Consequence for interpretation:* none of the four is a reference collection
+of known epitopes, so B-1/B-2 below stay open. `pdb` and the AFDB indexes
+are structural backgrounds, and they are **different populations** — AFDB is
+far less redundant (one model per sequence, against the PDB's many copies of
+popular targets) and consists of predictions carrying a pLDDT confidence
+this pipeline does not read. A hit against AFDB says a geometry occurs in a
+*predicted* model; it is not evidence the geometry was ever observed.
+
+**A-3b.6 Index paths are relative to the index directory.** The `foldcomp_db`
+key in an index's `.type` file and the entries in its `.lookup` are relative,
+so a database tree can be moved without rebuilding; only the paths in
+`default.toml` need updating. Status: **verified** — all three indexes were
+re-queried successfully after the move, and the PDB index returned 1CKA
+itself at RMSD 0.0000.
+
 **A-3b.4 Verified against one build only** — commit
 `2a756d9522d5bab8f41bc73ec72ec2327e31cd97`. Recorded in every manifest;
 `ibc-search folddisco-info` reports a mismatch. Status: **documented**.
 *If the build changes, A-3b.1 to A-3b.3 must be re-verified.*
+
+---
+
+## 3c. Investigation structure sets
+
+**A-3c.1 `background_dataset` is selected for nothing, and that is the
+design.** 750 structures, ≥250 of them AlphaFold predictions, 50–2300
+residues, one representative per 30% sequence-identity cluster. The other
+three sets in `investigation_databases/` are selected *for* a feature; this
+one exists so a statistic can be compared against proteins in general.
+Status: **documented**. Built by `scripts/build_background_dataset.py`; every
+filter and the achieved composition are in its `build_manifest.json`.
+
+**A-3c.2 Candidates are shuffled, not sorted by resolution.**
+`build_investigation_db.py` takes cluster representatives in ascending
+resolution, which is correct for a category and **wrong for a background**:
+resolution correlates with size, order and how heavily studied a protein is,
+so best-first selection biases three of the axes the set is meant to span.
+Status: **choice**, recorded with its seed so a run is reproducible.
+
+**A-3c.3 Size is stratified, because random sampling reproduces the PDB.**
+Seven bins over 50–2300 residues with equal quotas. Unstratified, the set
+would concentrate at 100–350 residues and the large end would be nearly
+absent. Bin widths grow with size because the PDB thins out. A bin that
+cannot be filled is topped up from the AlphaFold pool and **named in the
+manifest** (`bins_short_final`). Status: **choice**.
+
+**A-3c.4 "High quality" is THREE different criteria, kept in separate
+columns.** This is the one that would be easiest to get silently wrong:
+
+| source | criterion | `resolution_angstrom` | `mean_plddt` |
+|---|---|---|---|
+| X-ray, cryo-EM | resolution < 3.0 Å | value | empty |
+| NMR | none exists; admitted on method | **empty** | empty |
+| AlphaFold | mean pLDDT ≥ 70 | **empty** | value |
+
+An NMR entry carries no resolution, so the RCSB query uses an **OR** —
+resolution below the limit *or* method is NMR. Requiring a resolution would
+have excluded every NMR structure while appearing to be a quality filter.
+A blank resolution cell is an absent quantity, **not zero and not the
+threshold**. pLDDT is a prediction's confidence in itself; it is not a
+resolution and the two must not be pooled into one quality number.
+Status: **documented**.
+
+**A-3c.5 Residue counts come from the written file, not from RCSB.**
+`deposited_polymer_monomer_count` shortlists candidates in the search, but it
+counts the deposited polymer rather than what a parser sees, so the size bin
+and the 50–2300 bound are decided by parsing model 1 of the file on disk. An
+entry whose parsed count falls outside the range is dropped after download.
+Status: **verified** in code.
+
+**A-3c.6 Cross-source redundancy is controlled by UniProt accession.** 30%
+clustering makes the PDB half non-redundant, but it cannot see the AlphaFold
+half. An AlphaFold model whose accession already appears in a selected PDB
+entity is rejected, so the same protein cannot enter twice by two routes.
+Status: **choice** — accession identity is a strict test and will not catch
+two *homologues* across the source boundary.
+
+*Limitation:* the set is **unlabelled**, by design. It supports background
+and null comparisons and nothing that needs a positive class.
+
+---
+
+## 3d. Run output layout and figures
+
+**A-3d.1 Every run gets the same layout, produced by default.**
+`finalize_run.py` writes `00_figures/`, `01_statistics/` and a
+`<instance>/00_figures/` per structure, and `run_panel.py` calls it unless
+`--no-finalize` is passed. Status: **choice**. *Why it is the default:* the
+same tools run by hand in different orders produced runs that could not be
+compared without first reconstructing what each had been given.
+
+**A-3d.2 The epitope battery is gated on labels found IN THE DATA.**
+`labelled_run()` reads `is_epitope` from the scored table; no flag can tell a
+run it has ground truth. Without a positive class the pooled AUC, the
+permutation null, precision and recall are **not computed**, and
+`run_summary.json` records `no_ground_truth_note`. Status: **verified** in
+test. *Why:* a number computed against an empty positive class looks like
+performance and measures nothing.
+
+**A-3d.3 The count ramp is sequential and its lightness is monotonic.**
+green → teal → blue, lightness 0.884 → 0.320 in HLS, decreasing throughout —
+MEASURED, and checked by `tests/test_visualization.py` so a later edit to the
+five hex values cannot quietly break it. Status: **verified**.
+*Consequences, all deliberate:* the order survives greyscale printing; "many
+hits" is the visually heavy end; and green-to-blue separates under the common
+forms of colour blindness where red-to-green does not. A count has a floor at
+zero and no centre, so its ramp is sequential, unlike the diverging red/grey
+used for z-scores, which do have a meaningful centre.
+
+**A-3d.4 Heatmap padding is not zero.** A row shorter than the widest is
+padded with NaN and drawn in the grid colour. Zero means *assessed and
+matched by nothing*; a position a chain does not have has no count at all.
+Status: **verified** in test. The x axis is position within the row and
+**not** a sequence alignment — column *i* of two rows is not a homologous
+site, and the axis label says so on the figure.
+
+**A-3d.5 3-D figures use one colour convention regardless of scoring.**
+Red/grey for both the z-score and the count runs; the green-to-blue ramp
+appears only in the 2-D heatmap. Status: **choice** — a reader should not
+have to establish which scale a structure was coloured on before reading it.
+
+**A-3d.6 The median line's ink follows the theme.** Black on the light
+surface, white on the dark one, and the caption names whichever was drawn.
+Status: **choice** — "black" cannot be literal on a dark surface, and a
+caption asserting a colour the figure does not contain is worse than one
+that follows it.
+
+**A-3d.7 The hit count is reported both raw and normalised by search
+effort.** `count_scoring.py` writes `n_distinct_hits` and, beside it,
+`hits_per_motif = n_distinct_hits / n_motifs` — the distinct matched sites a
+residue collected per emitted query it belonged to. Status: **correction of
+a confound**. Under `dumb_search` one ball is placed per residue, so a
+mid-chain residue falls inside more balls than one near a terminus and is
+searched more often; the raw count therefore mixes how much the database
+matched with how much the residue was searched. MEASURED on the 187-structure
+background run, the correction is not cosmetic: the mean RSA of the residues
+in the top 20% moves from 0.071 (raw) to 0.230 (normalised) against 0.267 for
+the rest, so most of the apparent "high-count residues are buried" effect was
+coverage, not matching.
+
+Both columns are kept and neither replaces the other:
+
+* The 3-D figures still colour on `n_distinct_hits` (A-3d.5), so the
+  normalised whole-set statistics are written to a **separate**
+  `set_statistics_hits_per_motif.json`, carrying an explicit warning that its
+  red set is ranked on the ratio and is therefore not the red set on screen.
+* The ratio is **not** the mean hit count of the residue's motifs. Its
+  numerator is deduplicated across those motifs, so motifs that overlap and
+  match the same reference site contribute once, and the ratio sits below
+  that mean by an amount growing with motif redundancy.
+* The ratio is bounded above by FoldDisco's `--top` cap, exactly as the raw
+  count is. On both runs the pooled maximum is exactly 40.0 at `--top 40`, so
+  it saturates and compresses under censoring in the same way, so it does
+  not rescue a comparison the cap has already invalidated.
 
 ---
 
@@ -476,7 +667,8 @@ described as epitope-scale.
 |---|---|---|
 | **B-1** | reference collection to search | Which dataset (IEDB-derived structures, SAbDab, other). Nothing selected, downloaded or inspected. |
 | **B-2** | what a reference "entry" is | Whole antigen chain vs. interface-cropped vs. epitope residues only. This changes what a hit *means* and is the most consequential open decision. |
-| **B-3** | `[folddisco].reference_index_path` | B-1/B-2. Marked `status: blocked` in the config. |
+| **B-3** | `[folddisco].reference_index_path` | B-1/B-2. Marked `status: blocked` in the config. Note this is *not* unblocked by the four registered databases (A-3b.5): having more structural backgrounds to choose between is not the same as having an epitope reference. |
+| **B-3b** | IDF parameters for the AFDB indexes | A fit of their own (`idf_zscore.py fit`). Until then `afdb_proteome` and `afdb_swissprot` support hit counts but not z-scores, and the code refuses rather than substituting the PDB's. |
 | **B-4** | FoldDisco search tolerances for this task | No reference index to tune against. Defaults (0.5 Å, 5.0°) recorded, unused. |
 | **B-5** | negative/background set | Without a baseline, no hit count is interpretable. |
 | **B-6** | redundancy control for references | Antibody–antigen data is heavily redundant; un-deduplicated references inflate any frequency statistic. |

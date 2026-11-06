@@ -56,9 +56,16 @@ from top_motifs_by_organism import (  # noqa: E402
 )
 
 DEFAULT_LOOKUP = Path(
-    "/Users/mvh_mac/Documents/master_thesis_2026/folddisco_databases/"
+    "~/documents_local_only/master_thesis_data_files/folddisco_databases/"
     "index/pdb_folddisco.lookup"
-)
+).expanduser()
+"""The PDB index's lookup table: the universe a PDB search could have returned.
+
+This statistic is only defined against the index that was actually searched,
+so pass ``--lookup`` when the run used another database. The AFDB indexes
+have no SIFTS chain mapping, so the human/non-human split does not apply to
+them at all.
+"""
 
 
 def indexed_entries(lookup: Path) -> set[str]:

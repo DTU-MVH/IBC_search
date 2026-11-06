@@ -163,10 +163,50 @@ def test_registry_pairs_an_index_with_its_own_parameters():
         entry = resolve_database(config, name)
         assert entry["name"] == name
         assert entry["index_path"].is_absolute()
-        assert entry["idf_params_path"] is not None
+
+    # A database MAY have no fitted parameters -- the AFDB indexes do not.
+    # What must never happen is a database silently borrowing another's, so
+    # the pairing is one-to-one or absent, never shared.
+    fitted = {
+        name: resolve_database(config, name)["idf_params_path"]
+        for name in names
+    }
+    assert fitted["pdb"] is not None, "the default database must be scorable"
+    used = [p for p in fitted.values() if p is not None]
+    assert len(set(used)) == len(used), \
+        "two databases share one parameter file; IDF does not transfer"
 
     # the default resolves to a real registry entry
     assert resolve_database(config)["name"] in names
+
+
+def test_a_database_without_fitted_parameters_refuses_to_z_score(tmp_path: Path):
+    """Counting hits is fine without a fit; z-scoring them is not.
+
+    The AFDB indexes have no fitted parameters. Applying another database's
+    would produce a confident-looking number from the wrong null -- measured
+    on one 4-residue motif, the same query scores IDF 80.5 against the PDB
+    index and 16.2 against afdb_proteome.
+    """
+    from ibc_search.config import database_names, load_config, resolve_database
+
+    config = load_config()
+    unfitted = [
+        name for name in database_names(config)
+        if resolve_database(config, name)["idf_params_path"] is None
+    ]
+    if not unfitted:
+        pytest.skip("every configured database has fitted parameters")
+
+    scored = tmp_path / "idf_scored.tsv"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "apply", str(tmp_path / "hits.tsv"),
+         "-d", unfitted[0], "-o", str(scored)],
+        capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "no idf_params" in (r.stdout + r.stderr)
+    assert not scored.exists()
 
 
 def test_unknown_database_names_the_alternatives():

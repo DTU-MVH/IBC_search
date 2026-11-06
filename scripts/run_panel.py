@@ -31,6 +31,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SEARCH = REPO / "scripts" / "folddisco_search.sh"
 
+sys.path.insert(0, str(REPO / "src"))
+
+from ibc_search.config import load_config, resolve_database  # noqa: E402
+
 STRUCTURE_COLUMNS = ("structure_file", "antigen_file", "path")
 """Columns naming a structure FILE, tried in order."""
 
@@ -39,12 +43,18 @@ ID_COLUMN = "pdb_id"
 
 
 def _run_one(task: tuple) -> tuple[str, bool, str]:
-    inst, structure, out_dir, radius, log_path, top, extra = task
+    (inst, structure, out_dir, radius, log_path, top, extra, method,
+     seed_residues, seed_rounds) = task
     env = dict(os.environ, PYTHONPATH=str(REPO / "src"))
     with open(log_path, "w") as log:
         scan = subprocess.run(
-            [str(REPO / ".venv/bin/python"), "-m", "ibc_search", "scan",
-             structure, "--radius", str(radius), "-o", out_dir],
+            [str(REPO / ".venv/bin/python"), "-m", "ibc_search", method,
+             structure, "--radius", str(radius), "-o", out_dir]
+            + (["--seed-residues", seed_residues,
+                # The panel knows the entry identity; the filename may not
+                # carry it (biological assemblies are `<id>-assembly1`).
+                "--seed-structure-id", inst] if seed_residues else [])
+            + (["--seed-rounds", str(seed_rounds)] if seed_rounds else []),
             stdout=log, stderr=subprocess.STDOUT, cwd=str(REPO), env=env,
         )
         if scan.returncode != 0:
@@ -63,18 +73,69 @@ def _run_one(task: tuple) -> tuple[str, bool, str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("run_dir", type=Path, help="directory holding panel.tsv")
+    ap.add_argument("--panel", type=Path, default=None, metavar="TSV",
+                    help="read the member list from here instead of "
+                         "<run_dir>/panel.tsv. Results still land in "
+                         "run_dir, so several processes can share one run "
+                         "directory as long as their panels are DISJOINT -- "
+                         "which is how worker capacity is added to a run "
+                         "already in progress without two workers racing on "
+                         "one structure's output files")
     ap.add_argument("--radius", type=float, required=True,
                     help="ball radius in Angstroms for the scan")
-    ap.add_argument("--top", type=int, default=40,
-                    help="FoldDisco --top, structures kept per query [40]")
+    ap.add_argument("--method", choices=("scan", "dumb-search"),
+                    default="scan",
+                    help="extraction method. `scan` is the filtered ball "
+                         "search; `dumb-search` places one ball per residue "
+                         "with no thresholds and so emits several times more "
+                         "queries per structure [scan]")
+    ap.add_argument("--seed-rounds", type=int, default=None, metavar="N",
+                    help="rounds of seeding with --seed-residues; 2 also "
+                         "seeds every residue inside a round-1 ball")
+    ap.add_argument("--seed-residues", default=None, metavar="TSV",
+                    help="dumb-search only: place balls ONLY on the residues "
+                         "this file names. Filtered per structure by its "
+                         "pdb_id/instance column")
+    ap.add_argument("--top", type=int, default=700,
+                    help="FoldDisco --top, structures kept per query. 40 was "
+                         "measured to censor 72-98%% of motifs, which makes "
+                         "the hit count a measure of search effort rather "
+                         "than of how common a motif is [700]")
+    ap.add_argument("-d", "--database", default=None, metavar="NAME",
+                    help="named reference database from "
+                         "[folddisco.databases]; default: "
+                         "[folddisco].default_database. List them with "
+                         "`ibc-search list-databases`")
     ap.add_argument("-j", "--jobs", type=int, default=6)
     ap.add_argument("--force", action="store_true",
                     help="re-run members that already have hits")
     ap.add_argument("--search-arg", action="append", default=[],
                     help="extra argument for folddisco_search.sh; repeatable")
+    ap.add_argument("--no-finalize", action="store_true",
+                    help="do not run finalize_run.py afterwards. The standard "
+                         "00_figures/01_statistics layout is produced by "
+                         "default, so that every run has the same shape")
+    ap.add_argument("--no-pymol", action="store_true",
+                    help="finalize without the per-structure PyMOL renders")
     args = ap.parse_args(argv)
 
-    panel = args.run_dir / "panel.tsv"
+    config = load_config()
+    # Resolve the database HERE rather than letting the shell script fall
+    # back to its own default, so the run is searched against the index the
+    # caller named and the choice is printed once, up front, instead of being
+    # inferred afterwards from a path in a log.
+    entry = resolve_database(config, args.database)
+    if not entry["index_path"].exists():
+        print(f"error: database {entry['name']!r} points at "
+              f"{entry['index_path']}, which does not exist", file=sys.stderr)
+        return 2
+    print(f"database: {entry['name']}  ({entry['index_path']})")
+    if entry["idf_params_path"] is None:
+        print("  no fitted IDF parameters for this database: hits can be "
+              "counted but not z-scored (see idf_zscore.py fit)")
+    search_args = ["-i", str(entry["index_path"]), *args.search_arg]
+
+    panel = args.panel or (args.run_dir / "panel.tsv")
     if not panel.is_file():
         print(f"error: no panel at {panel}", file=sys.stderr)
         return 2
@@ -121,14 +182,15 @@ def main(argv: list[str] | None = None) -> int:
         out_dir.mkdir(parents=True, exist_ok=True)
         tasks.append((inst, structure, str(out_dir), args.radius,
                       str(args.run_dir / f"{inst}.log"), args.top,
-                      tuple(args.search_arg)))
+                      tuple(search_args), args.method, args.seed_residues,
+                      args.seed_rounds))
 
     if skipped:
         print(f"{skipped} members already searched, skipped (--force re-runs)")
     if not tasks:
         print("nothing to do")
         return 0
-    print(f"scanning and searching {len(tasks)} structures at radius "
+    print(f"{args.method}: {len(tasks)} structures at radius "
           f"{args.radius} A, {args.jobs} at a time", flush=True)
 
     started = time.time()
@@ -148,7 +210,25 @@ def main(argv: list[str] | None = None) -> int:
                       flush=True)
 
     print(f"\n{ok} searched, {bad} failed, {time.time() - started:.0f}s elapsed")
-    return 0 if bad == 0 else 1
+
+    # Finalise by default. The layout is only standard if producing it is
+    # the default path rather than a step someone has to remember, which is
+    # how runs drifted into having different figures in the first place.
+    if args.no_finalize:
+        print("skipping finalize (--no-finalize); run "
+              "scripts/finalize_run.py yourself for the standard layout")
+        return 0 if bad == 0 else 1
+    if ok == 0:
+        print("nothing searched, so nothing to finalise")
+        return 1
+
+    print("\nfinalising: standard figures, statistics and per-structure renders")
+    cmd = [str(REPO / ".venv/bin/python"), str(REPO / "scripts/finalize_run.py"),
+           str(args.run_dir), "-j", str(args.jobs)]
+    if args.no_pymol:
+        cmd.append("--no-pymol")
+    final = subprocess.run(cmd, cwd=str(REPO))
+    return 0 if (bad == 0 and final.returncode == 0) else 1
 
 
 if __name__ == "__main__":

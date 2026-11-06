@@ -176,6 +176,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="filter scores_tsv to this instance, if it has that column")
     ap.add_argument("--score-column", default="max_motif_z")
     ap.add_argument("--threshold", type=float, default=1.7)
+    ap.add_argument("--top-fraction", type=float, default=None, metavar="F",
+                    help="colour the top F of THIS structure's scored "
+                         "residues instead of using an absolute --threshold. "
+                         "0.20 marks the top 20%%. A per-structure cutoff: a "
+                         "hit count has no absolute scale that transfers "
+                         "between structures, because it depends on how much "
+                         "of the database resembles that particular fold")
     ap.add_argument("--epitope-column", default="is_epitope")
     ap.add_argument("--unscored-value", type=float, default=-9.0)
     ap.add_argument("--surface-transparency", type=float, default=0.72)
@@ -224,6 +231,23 @@ def main(argv: list[str] | None = None) -> int:
         print("error: no scores read", file=sys.stderr)
         return 2
 
+    threshold = args.threshold
+    if args.top_fraction is not None:
+        if not 0.0 < args.top_fraction <= 1.0:
+            print("error: --top-fraction must be in (0, 1]", file=sys.stderr)
+            return 2
+        ranked = sorted(scores.values(), reverse=True)
+        # Index of the last residue inside the top fraction, then the cutoff
+        # is that value. Ties at the boundary are INCLUDED: with integer hit
+        # counts many residues share a value, and excluding them would make
+        # the marked set depend on dictionary order rather than on the data.
+        cut_index = max(int(round(len(ranked) * args.top_fraction)) - 1, 0)
+        threshold = ranked[cut_index]
+        n_marked = sum(1 for v in scores.values() if v >= threshold)
+        print(f"top {args.top_fraction:.0%} of {len(ranked)} scored residues "
+              f"-> cutoff {threshold:g}; {n_marked} marked "
+              f"({n_marked / len(ranked):.1%} after ties)")
+
     out: Path = args.out
     pdb = out.with_suffix(".scored.pdb")
     pml = out.with_suffix(".pml")
@@ -242,8 +266,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.mode == "confusion":
             epitope_block = CONFUSION_BLOCK.format(
-                epitope_sel=sel, threshold=args.threshold,
-                threshold_low=args.threshold - 1e-4,
+                epitope_sel=sel, threshold=threshold,
+                threshold_low=threshold - 1e-4,
                 sphere_scale=args.sphere_scale,
             )
         else:
@@ -255,9 +279,9 @@ def main(argv: list[str] | None = None) -> int:
 
     pml.write_text(PML.format(
         pdb=pdb.name, png=out.name, pse=pse.name, bg=args.bg,
-        threshold=args.threshold,
+        threshold=threshold,
         sentinel_cut=args.unscored_value + 0.5,
-        threshold_low=args.threshold - 1e-4,
+        threshold_low=threshold - 1e-4,
         surface_transparency=args.surface_transparency,
         width=args.width, height=args.height, dpi=args.dpi,
         epitope_block=epitope_block, extra=args.extra,
@@ -271,14 +295,14 @@ def main(argv: list[str] | None = None) -> int:
               f"{(proc.stderr or proc.stdout)[-800:]}", file=sys.stderr)
         return 2
 
-    n_called = sum(1 for z in scores.values() if z >= args.threshold)
+    n_called = sum(1 for z in scores.values() if z >= threshold)
     print(f"wrote {out}")
     print(f"  {pdb.name}  score in the B-factor column "
           f"({scored_atoms}/{total_atoms} atoms scored, "
           f"unscored = {args.unscored_value})")
     print(f"  {pml.name}  PyMOL script   {pse.name}  session")
     print(f"  {len(scores)} residues scored, {n_called} at or above "
-          f"{args.threshold:+.1f}, {len(set(epitope))} epitope residues marked")
+          f"{threshold:+.4g}, {len(set(epitope))} epitope residues marked")
     return 0
 
 

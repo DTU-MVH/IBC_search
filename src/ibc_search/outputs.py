@@ -324,16 +324,38 @@ def write_query_file(
             "coordinates."
         )
 
+    # One line per DISTINCT query, not per patch. Two patches can carry the
+    # identical residue set -- routinely under `dumb-search`, which places a
+    # ball on every residue and deduplicates nothing, so two balls centred on
+    # neighbouring residues in a helix enclose the same members. Searching
+    # that query twice returns byte-identical hits for twice the time.
+    #
+    # MEASURED on the 5.5 A background run: 51 of 31,304 queries (0.16%) were
+    # repeats, spread across 32 of 60 structures.
+    #
+    # The patch set is untouched: `dumb-search` still emits exactly one motif
+    # per residue, and the index below still carries one row per patch. Only
+    # the search input is deduplicated, and `line_number` is what ties several
+    # patches to the one line they share.
     lines: list[str] = []
+    line_of_query: dict[str, int] = {}
     index_rows: list[dict[str, Any]] = []
+    n_duplicate_queries = 0
     for patch in result.patches:
         if not patch.emit_query:
             continue
         residues = [parsed.residues[m.residue_index].rid for m in patch.members]
-        lines.append(query_file_line(structure_path, residues))
+        line = query_file_line(structure_path, residues)
+        line_number = line_of_query.get(line)
+        if line_number is None:
+            lines.append(line)
+            line_number = len(lines)
+            line_of_query[line] = line_number
+        else:
+            n_duplicate_queries += 1
         index_rows.append(
             {
-                "line_number": len(lines),
+                "line_number": line_number,
                 "patch_id": patch.patch_id,
                 "structure_path": structure_path,
                 "radius_angstrom": patch.radius,
@@ -341,6 +363,15 @@ def write_query_file(
                 "n_members": patch.size,
                 "query_string": patch.query_string,
             }
+        )
+
+    if n_duplicate_queries:
+        result.warnings.append(
+            f"{n_duplicate_queries} of {len(index_rows)} emitted patches share "
+            f"a residue set with an earlier patch; the query file holds "
+            f"{len(lines)} DISTINCT queries and each is searched once. The "
+            "patches table still lists every patch, and the query index maps "
+            "the duplicates to the line they share."
         )
 
     query_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")

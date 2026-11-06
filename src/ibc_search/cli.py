@@ -15,6 +15,17 @@ Commands
     Report what is known about the installed FoldDisco build and the verified
     query contract. Runs no search.
 
+``dumb-search``
+    The same pipeline as ``scan``, but motifs come from
+    :func:`ibc_search.dumb_search.run_dumb_search`: one ball per residue,
+    walked from terminus to terminus, with none of the ball search's
+    thresholds. A baseline, written to the same output format.
+
+``list-databases``
+    Print the reference databases in the registry, saying for each whether
+    its index is present and whether IDF parameters have been fitted against
+    it. The two are reported separately because they gate different things.
+
 ``folddisco-search``
     Run FoldDisco over a finished scan's queries and join the hits back to
     their patches. This is a thin delegation to
@@ -31,12 +42,19 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from . import __version__
 from .ball_search_algo import run_ball_search
-from .config import default_config_path, load_config, resolve_database
+from .config import (
+    default_config_path,
+    describe_databases,
+    load_config,
+    resolve_database,
+)
+from .dumb_search import run_dumb_search
 from .errors import IbcSearchError
 from .exposure import compute_exposure
 from .logging_utils import setup_logging
@@ -57,23 +75,13 @@ def _parse_overrides(pairs: list[str] | None) -> dict[str, str]:
     return overrides
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="ibc-search",
-        description=(
-            "Extract candidate discontinuous structural motifs from a protein "
-            "surface and prepare them as FoldDisco queries. Patches are "
-            "candidate motifs, NOT epitopes, and establish nothing about "
-            "antigenicity or immunogenicity."
-        ),
-    )
-    parser.add_argument("--version", action="version", version=f"ibc-search {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+def _add_structure_arguments(scan: argparse.ArgumentParser) -> None:
+    """Add the options shared by every structure-scanning command.
 
-    scan = sub.add_parser(
-        "scan",
-        help="scan one structure from a file path or a PDB entry ID (4-character or extended)",
-    )
+    Shared rather than duplicated so that `scan` and `dumb-search` cannot
+    drift apart on input handling, which is the part of the two commands that
+    is genuinely the same.
+    """
     scan.add_argument(
         "input",
         help=(
@@ -110,13 +118,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="ball-centre representation (default: cb)",
     )
     scan.add_argument(
-        "--seed-rsa", type=float, default=None, metavar="FRAC",
-        help=(
-            "RSA threshold for seed eligibility. An implementation choice, "
-            "not an established epitope criterion"
-        ),
-    )
-    scan.add_argument(
         "--workers", type=int, default=None,
         help="worker threads for the ball queries (default 1; output is "
              "identical regardless)",
@@ -127,9 +128,89 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan.add_argument("--log-level", default=None, help="DEBUG/INFO/WARNING/ERROR")
 
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="ibc-search",
+        description=(
+            "Extract candidate discontinuous structural motifs from a protein "
+            "surface and prepare them as FoldDisco queries. Patches are "
+            "candidate motifs, NOT epitopes, and establish nothing about "
+            "antigenicity or immunogenicity."
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"ibc-search {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    scan = sub.add_parser(
+        "scan",
+        help="scan one structure from a file path or a PDB entry ID (4-character or extended)",
+    )
+    _add_structure_arguments(scan)
+    scan.add_argument(
+        "--seed-rsa", type=float, default=None, metavar="FRAC",
+        help=(
+            "RSA threshold for seed eligibility. An implementation choice, "
+            "not an established epitope criterion"
+        ),
+    )
+
+    dumb = sub.add_parser(
+        "dumb-search",
+        help="one ball per residue, terminus to terminus, with no thresholds",
+        description=(
+            "The dumb_search method. Walk the scanned chains from the "
+            "N-terminal residue to the C-terminal residue and place one ball "
+            "at every residue on the way; each ball's contents are a motif. "
+            "Ball geometry (radii, centre mode, nearest-heavy-atom "
+            "membership) is identical to `scan`; what is absent is every "
+            "filter -- no RSA threshold for seeds or members, no surface "
+            "connectivity check, no deduplication, no size limits. It exists "
+            "as a baseline for telling results apart from the effect of "
+            "`scan`'s thresholds. Output format is identical, and a motif is "
+            "no more an epitope here than there."
+        ),
+    )
+    _add_structure_arguments(dumb)
+    dumb.add_argument(
+        "--seed-residues", type=Path, default=None, metavar="TSV",
+        help="place balls ONLY on the residues this file names, instead of "
+             "on every residue. A TSV with chain/res_id (or "
+             "auth_chain_id/auth_seq_id); a pdb_id/instance column filters "
+             "it to the structure being scanned, and an is_annotated column "
+             "is honoured. Membership is unaffected: a ball still collects "
+             "every residue within the radius, named or not")
+    dumb.add_argument(
+        "--seed-rounds", type=int, default=None, metavar="N",
+        help="rounds of seeding, with --seed-residues. 1 (default) places "
+             "balls on the named residues only. 2 also places a ball on "
+             "every residue that falls inside one of those balls, so the "
+             "walk covers the annotated SITE and each of its residues is "
+             "scored from its own centre. The added residues are exactly "
+             "the members round 1 already collected")
+    dumb.add_argument(
+        "--seed-structure-id", default=None, metavar="ID",
+        help="the ID to match the seed table's pdb_id/instance column "
+             "against, when the structure file is not named after the "
+             "entry (e.g. a `11KP-assembly1.cif.gz` whose annotations are "
+             "filed under `11KP`). Defaults to the file stem")
+
     show = sub.add_parser("show-config", help="print the resolved configuration")
     show.add_argument("-c", "--config", type=Path, default=None)
     show.add_argument("--set", action="append", default=None, metavar="section.key=value")
+
+    sub.add_parser(
+        "list-databases",
+        help="print the configured reference databases and their readiness",
+        description=(
+            "List [folddisco.databases]. A database pairs an index with the "
+            "IDF parameters fitted against it, and the two are reported "
+            "separately: without the index there is no search at all, while "
+            "without fitted parameters the hits can be counted but not "
+            "z-scored. Pass a name to `folddisco-search -d` or "
+            "`scripts/run_panel.py -d`."
+        ),
+    )
 
     sub.add_parser(
         "folddisco-info",
@@ -192,6 +273,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="remove the cap; expect a whole-PDB search to run for hours",
     )
     search.add_argument(
+        "--num-residue", type=int, default=None,
+        help=(
+            "skip candidate structures over N residues at the match stage "
+            "(default: [folddisco].search_num_residue). The count is summed "
+            "over models, so this is what excludes the multi-model NMR "
+            "ensembles that dominate the runtime. It changes which "
+            "candidates come back"
+        ),
+    )
+    search.add_argument(
+        "--no-num-residue", action="store_true",
+        help="no candidate size limit, leaving FoldDisco's own 50000",
+    )
+    search.add_argument(
         "--strict", action="store_true",
         help="fail if FoldDisco emitted any torn row",
     )
@@ -221,6 +316,12 @@ def _apply_cli_to_config(args: argparse.Namespace, config: dict[str, Any]) -> No
         config["ball_search"]["radii_angstrom"] = [float(r) for r in args.radius]
     if getattr(args, "center_mode", None):
         config["ball_search"]["center_mode"] = args.center_mode
+    if getattr(args, "seed_residues", None) is not None:
+        config["ball_search"]["seed_residues_path"] = str(args.seed_residues)
+    if getattr(args, "seed_rounds", None) is not None:
+        config["ball_search"]["seed_rounds"] = int(args.seed_rounds)
+    if getattr(args, "seed_structure_id", None):
+        config["ball_search"]["seed_structure_id"] = str(args.seed_structure_id)
     if getattr(args, "seed_rsa", None) is not None:
         config["ball_search"]["seed_rsa_threshold"] = float(args.seed_rsa)
     if getattr(args, "workers", None) is not None:
@@ -231,7 +332,18 @@ def _apply_cli_to_config(args: argparse.Namespace, config: dict[str, Any]) -> No
         config["run"]["output_dir"] = str(args.output_dir)
 
 
-def cmd_scan(args: argparse.Namespace, argv: list[str]) -> int:
+def cmd_scan(
+    args: argparse.Namespace,
+    argv: list[str],
+    method: Callable[..., Any] = run_ball_search,
+) -> int:
+    """Run one structure end to end with ``method`` as the extraction step.
+
+    ``scan`` and ``dumb-search`` differ in that one argument and nothing else:
+    input resolution, exposure, output tables and the manifest are shared, so
+    the two methods are compared on their extraction and not on incidental
+    differences in how their runs were set up.
+    """
     config = load_config(args.config, _parse_overrides(args.set))
     _apply_cli_to_config(args, config)
     from .config import validate_config
@@ -271,7 +383,7 @@ def cmd_scan(args: argparse.Namespace, argv: list[str]) -> int:
         logger.warning("%s", warning)
 
     t0 = time.perf_counter()
-    result = run_ball_search(parsed, exposure, config)
+    result = method(parsed, exposure, config)
     timings["ball_search_total_s"] = time.perf_counter() - t0
     for warning in result.warnings:
         logger.warning("%s", warning)
@@ -319,6 +431,36 @@ def cmd_scan(args: argparse.Namespace, argv: list[str]) -> int:
 def cmd_show_config(args: argparse.Namespace) -> int:
     config = load_config(args.config, _parse_overrides(args.set))
     print(json.dumps(config, indent=2))
+    return 0
+
+
+def cmd_list_databases() -> int:
+    """Print the registry, marking the default and anything not ready."""
+    rows = describe_databases(load_config())
+    if not rows:
+        print("no [folddisco.databases] are configured", file=sys.stderr)
+        return 2
+    for row in rows:
+        mark = "*" if row["is_default"] else " "
+        state = "ready" if row["index_present"] else "INDEX MISSING"
+        print(f" {mark} {row['name']:<18}{state}")
+        print(f"   {'':18}index   {row['index_path']}")
+        if row["idf_params_present"]:
+            fitted = f"fitted at --top {row['fitted_top']}"
+            # The radius is only recorded for databases whose fit noted it;
+            # inventing a default here would misreport the fit.
+            if row["fitted_radius_angstrom"] is not None:
+                fitted += f", radius {row['fitted_radius_angstrom']} A"
+            print(f"   {'':18}idf     {row['idf_params_path'].name} ({fitted})")
+        elif row["idf_params_path"] is None:
+            print(f"   {'':18}idf     none fitted -- hits can be COUNTED but "
+                  "not z-scored")
+        else:
+            print(f"   {'':18}idf     configured but MISSING at "
+                  f"{row['idf_params_path']}")
+    print("\n * = [folddisco].default_database")
+    print("Select one with `folddisco-search -d NAME` or "
+          "`scripts/run_panel.py -d NAME`.")
     return 0
 
 
@@ -414,6 +556,13 @@ def cmd_folddisco_search(args: argparse.Namespace) -> int:
         top = args.top if args.top is not None else fd.get("search_top")
         if top:
             cmd += ["--top", str(top)]
+    if args.no_num_residue:
+        cmd.append("--no-num-residue")
+    else:
+        numres = (args.num_residue if args.num_residue is not None
+                  else fd.get("search_num_residue"))
+        if numres:
+            cmd += ["--num-residue", str(numres)]
     if args.strict:
         cmd.append("--strict")
     if args.keep_raw:
@@ -437,8 +586,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "scan":
             return cmd_scan(args, full_command)
+        if args.command == "dumb-search":
+            return cmd_scan(args, full_command, method=run_dumb_search)
         if args.command == "show-config":
             return cmd_show_config(args)
+        if args.command == "list-databases":
+            return cmd_list_databases()
         if args.command == "folddisco-info":
             return cmd_folddisco_info()
         if args.command == "folddisco-search":

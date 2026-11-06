@@ -224,6 +224,34 @@ def database_names(config: dict[str, Any]) -> list[str]:
     return sorted((config.get("folddisco", {}).get("databases") or {}))
 
 
+def describe_databases(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every registry entry with its readiness resolved, for display.
+
+    Index presence and fitted-parameter presence are reported separately
+    because they gate different things: without the index there is no search
+    at all, while without parameters the hits can be counted but not
+    z-scored. Collapsing the two into one "available" flag would hide the
+    second case, which is the one that silently produces a meaningless
+    number if the wrong parameters are reached for.
+    """
+    default = (config.get("folddisco", {}) or {}).get("default_database")
+    out: list[dict[str, Any]] = []
+    for name in database_names(config):
+        entry = resolve_database(config, name)
+        params = entry["idf_params_path"]
+        out.append({
+            "name": name,
+            "is_default": name == default,
+            "index_path": entry["index_path"],
+            "index_present": entry["index_path"].exists(),
+            "idf_params_path": params,
+            "idf_params_present": bool(params and params.is_file()),
+            "fitted_top": entry.get("fitted_top"),
+            "fitted_radius_angstrom": entry.get("fitted_radius_angstrom"),
+        })
+    return out
+
+
 def resolve_database(config: dict[str, Any], name: str | None = None) -> dict[str, Any]:
     """Look up a named reference database and resolve its paths.
 
