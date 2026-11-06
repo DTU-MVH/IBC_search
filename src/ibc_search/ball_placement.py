@@ -138,15 +138,31 @@ def place_centers(
     parsed: ParsedStructure,
     config: dict[str, Any],
     *,
-    seed_keys: set[tuple[str, int]] | None,
+    seed_keys: set[tuple[str, int]] | None = None,
+    seed_indices: set[int] | None = None,
 ) -> tuple[dict[int, BallCenter], list[int], int, list[str], dict[str, float]]:
     """Put a ball centre on every seedable residue the seed list allows.
 
     Returns the centres, the walk order over them, how many seedable residues
     could take no centre, warnings, and timings.
 
-    ``seed_keys`` of ``None`` means no restriction -- every seedable residue
-    is a seed. An empty set means the opposite: nothing is a seed. Those are
+    Seeds are named one of two ways, and the difference matters:
+
+    ``seed_indices``
+        exact internal residue indices. Use this whenever the caller already
+        knows WHICH residues it means. ``(chain, res_id)`` is NOT a unique
+        residue key -- two residues sharing an author number differ only by
+        insertion code -- so a caller that holds indices and converts them to
+        keys can select a third residue it never chose. A method that labels
+        its seeds then has a residue in the walk belonging to no class.
+    ``seed_keys``
+        ``(auth_chain_id, auth_seq_id)`` pairs, for a caller whose seeds come
+        from an external table that names residues that way and cannot do
+        better. Insertion-code siblings all match, which is the table's own
+        ambiguity rather than one introduced here.
+
+    ``None`` for both means no restriction -- every seedable residue is a
+    seed. An empty set means the opposite: nothing is a seed. Those are
     different requests and are kept distinct, because conflating them turns
     "this annotation matched nothing" into "scan the whole protein".
 
@@ -154,6 +170,8 @@ def place_centers(
     chain, and does not depend on worker count. That is what makes a run
     reproducible.
     """
+    if seed_keys is not None and seed_indices is not None:
+        raise ValueError("pass seed_keys or seed_indices, not both")
     t0 = time.perf_counter()
     centers: dict[int, BallCenter] = {}
     walk: list[int] = []
@@ -162,6 +180,8 @@ def place_centers(
 
     for i in seedable_residue_indices(parsed, config):
         rec = parsed.residues[i]
+        if seed_indices is not None and i not in seed_indices:
+            continue
         if seed_keys is not None and (
             rec.rid.auth_chain_id,
             rec.rid.auth_seq_id,

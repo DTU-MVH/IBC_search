@@ -423,13 +423,14 @@ def run_few_balls_search(
         )
 
     # --- place the balls --------------------------------------------------
-    seed_keys_final = {
-        (parsed.residues[i].rid.auth_chain_id,
-         parsed.residues[i].rid.auth_seq_id)
-        for i in annotated_indices + background_indices
-    }
+    # By INDEX, not by (chain, res_id). Those two are not the same selection
+    # where insertion codes exist: A100 and A100A share an author number, so
+    # a key-based walk picks up a residue this method never chose and which
+    # therefore belongs to neither class. Measured on
+    # true_annotated_antibody_targets, where it aborted a scan outright.
     centers, walk, n_no_center, place_warnings, place_timings = place_centers(
-        parsed, config, seed_keys=seed_keys_final
+        parsed, config,
+        seed_indices=set(annotated_indices) | set(background_indices),
     )
     warnings.extend(place_warnings)
     timings.update(place_timings)

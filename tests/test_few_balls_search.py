@@ -262,6 +262,43 @@ def test_stratification_can_be_turned_off(buried_core_pdb, base_config):
     assert result.stats["n_background_balls"] == 4
 
 
+# --- insertion codes ----------------------------------------------------
+
+def test_insertion_code_siblings_do_not_enter_the_walk_unclassified(
+    icode_pdb, base_config
+):
+    """H10, H10A and H10B share an author number but are three residues.
+
+    Selecting seeds by (chain, res_id) would admit all three whenever any one
+    was chosen, putting a residue in the walk that belongs to neither class.
+    That aborted a real scan on true_annotated_antibody_targets, so it is
+    pinned here: every placed ball must carry a class, and the counts must be
+    the ones the method chose.
+    """
+    base_config["ball_search"]["radii_angstrom"] = [5.0]
+    base_config["few_balls_search"]["min_background_balls"] = 2
+    seeds = seeds_file(icode_pdb.parent, [("H", 10)])
+    _, result = pipeline(icode_pdb, base_config, seeds)
+
+    assert result.patches
+    assert all(p.seed_class in (SEED_CLASS_ANNOTATED, SEED_CLASS_BACKGROUND)
+               for p in result.patches)
+    counts = classes(result)
+    assert counts[SEED_CLASS_ANNOTATED] == result.stats["n_annotated_balls"]
+    assert counts[SEED_CLASS_BACKGROUND] == result.stats["n_background_balls"]
+    # A seed and its insertion-code siblings are distinct residues: a sibling
+    # may be chosen as background, but never silently as a third class.
+    assert counts[SEED_CLASS_ANNOTATED] + counts[SEED_CLASS_BACKGROUND] \
+        == len(result.patches)
+
+
+def test_place_centers_refuses_both_seed_selectors():
+    from ibc_search.ball_placement import place_centers
+
+    with pytest.raises(ValueError, match="not both"):
+        place_centers(None, {}, seed_keys=set(), seed_indices=set())
+
+
 # --- reproducibility --------------------------------------------------------
 
 def test_the_same_input_gives_the_same_background(
