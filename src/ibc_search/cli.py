@@ -235,6 +235,14 @@ def build_parser() -> argparse.ArgumentParser:
              "Where it binds, the two classes are deliberately unequal and "
              "the manifest says so")
     few.add_argument(
+        "--background-mode", choices=("protein", "surface"), default=None,
+        help="where background balls may sit. `protein` (default) samples "
+             "the whole protein, stratified by burial. `surface` restricts "
+             "them to residues at or above --background-rsa, which is what "
+             "a surface annotation (an interface, an epitope) needs: "
+             "otherwise the control differs from the annotated class in "
+             "burial as well as in being annotated")
+    few.add_argument(
         "--background-rsa", type=float, default=None, metavar="FRAC",
         help="the buried/exposed boundary for stratifying the background "
              "(default: [few_balls_search].background_rsa_threshold)")
@@ -376,6 +384,9 @@ def _apply_cli_to_config(args: argparse.Namespace, config: dict[str, Any]) -> No
     if getattr(args, "min_background", None) is not None:
         config["few_balls_search"]["min_background_balls"] = int(
             args.min_background)
+    if getattr(args, "background_mode", None):
+        config["few_balls_search"]["background_mode"] = str(
+            args.background_mode)
     if getattr(args, "background_rsa", None) is not None:
         config["few_balls_search"]["background_rsa_threshold"] = float(
             args.background_rsa)

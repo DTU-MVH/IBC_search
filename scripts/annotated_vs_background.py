@@ -95,6 +95,19 @@ def motif_scores(run_dir: Path, inst: str) -> list[dict[str, Any]]:
     if not patches.is_file():
         return []
     sites = load_motif_sites(d)
+    # The ball's own seed residue exposure, from the member row that IS the
+    # seed. Needed to restrict the background to surface residues after the
+    # fact, without re-searching.
+    seed_rsa: dict[str, float] = {}
+    members = d / "patch_members.tsv"
+    if members.is_file():
+        for m in csv.DictReader(members.open(), delimiter="\t"):
+            if m.get("is_seed") != "true" or m.get("rsa_missing_reason"):
+                continue
+            try:
+                seed_rsa[m["patch_id"]] = float(m["rsa"])
+            except (KeyError, ValueError):
+                continue
     out: list[dict[str, Any]] = []
     for r in csv.DictReader(patches.open(), delimiter="\t"):
         if r.get("emit_query", "true").lower() == "false":
@@ -118,6 +131,7 @@ def motif_scores(run_dir: Path, inst: str) -> list[dict[str, Any]]:
             "patch_id": r["patch_id"],
             "seed_residue": (r.get("seed_residue_labels") or "").strip(),
             "seed_class": seed_class,
+            "seed_rsa": seed_rsa.get(r["patch_id"]),
             "n_distinct_sites": len(sites.get(r["patch_id"], ())),
         })
     return out
@@ -146,6 +160,67 @@ def read_run(run_dir: Path, panel: Path | None = None
 # ---------------------------------------------------------------------------
 # the verdict
 # ---------------------------------------------------------------------------
+
+def restrict_background_to_surface(
+    records: list[dict[str, Any]], min_rsa: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Drop background balls whose SEED residue is not solvent exposed.
+
+    For an annotation that is intrinsically a surface feature -- an
+    interface, an epitope -- a background drawn from the whole protein
+    differs from the annotated class in burial as well as in being
+    annotated, so a difference between them cannot be attributed to the
+    annotation. Restricting the background to exposed seeds removes that.
+
+    This is NOT the same as re-running with ``background_mode = "surface"``.
+    Re-running would CHOOSE a full set of dispersed surface balls; filtering
+    keeps only those surface balls that the protein-wide selection happened
+    to pick, so each structure ends with a smaller background and its median
+    rests on fewer values. The two answer the same question with different
+    precision, and this one needs no new search.
+
+    Annotated balls are never filtered: the question is what the annotated
+    residues do, including any that are buried.
+
+    A background ball whose RSA could not be computed is DROPPED, not kept:
+    the restriction claims every remaining ball is on the surface, and an
+    uncomputable RSA cannot support that claim.
+    """
+    kept: list[dict[str, Any]] = []
+    n_bg_before = n_bg_kept = n_no_rsa = 0
+    for rec in records:
+        if rec["seed_class"] != SEED_CLASS_BACKGROUND:
+            kept.append(rec)
+            continue
+        n_bg_before += 1
+        rsa = rec.get("seed_rsa")
+        if rsa is None:
+            n_no_rsa += 1
+            continue
+        if rsa < min_rsa:
+            continue
+        n_bg_kept += 1
+        kept.append(rec)
+    lost = sorted({
+        r["instance"] for r in records
+        if r["seed_class"] == SEED_CLASS_BACKGROUND
+    } - {
+        r["instance"] for r in kept
+        if r["seed_class"] == SEED_CLASS_BACKGROUND
+    })
+    return kept, {
+        "background_restricted_to_surface": True,
+        "background_min_rsa": min_rsa,
+        "n_background_before_restriction": n_bg_before,
+        "n_background_after_restriction": n_bg_kept,
+        "n_background_dropped_no_rsa": n_no_rsa,
+        # Structures that lost their whole background keep their annotated
+        # balls but can no longer be given a verdict; they become blanks
+        # rather than silently disappearing from the denominator unnoticed.
+        "n_structures_left_without_any_background": len(lost),
+        "structures_left_without_any_background": lost[:20],
+    }
+
 
 def annotated_beats_background(
     records: list[dict[str, Any]], *, reference: str = "median",
@@ -477,6 +552,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("run_dir", type=Path, help="a few_balls_search run")
     ap.add_argument("--panel", type=Path, default=None,
                     help="member list [<run_dir>/panel.tsv]")
+    ap.add_argument("--background-min-rsa", type=float, default=None,
+                    metavar="FRAC",
+                    help="drop background balls whose seed residue has RSA "
+                         "below this, so a surface annotation is compared "
+                         "against surface background only. Annotated balls "
+                         "are never filtered. Not the same as re-running "
+                         "with background_mode=surface, which would choose "
+                         "a full dispersed surface set rather than keeping "
+                         "a subset of the protein-wide one")
     ap.add_argument("--reference", choices=("median", "mean"),
                     default="median",
                     help="the background reference point an annotated ball "
@@ -497,22 +581,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {len(missing)} panel members produced no patches and were "
               f"skipped (e.g. {', '.join(missing[:5])})")
 
+    restriction: dict[str, Any] = {"background_restricted_to_surface": False}
+    if args.background_min_rsa is not None:
+        records, restriction = restrict_background_to_surface(
+            records, args.background_min_rsa)
+        print(f"  background restricted to RSA >= "
+              f"{args.background_min_rsa}: "
+              f"{restriction['n_background_after_restriction']} of "
+              f"{restriction['n_background_before_restriction']} balls kept"
+              f" ({restriction['n_background_dropped_no_rsa']} dropped for "
+              f"having no RSA); "
+              f"{restriction['n_structures_left_without_any_background']} "
+              f"structures left with no background at all")
+
     verdicts = annotated_beats_background(records, reference=args.reference)
     stats = statistics(records, verdicts)
+    stats.update(restriction)
     stats["n_panel_members_without_output"] = len(missing)
     stats["background_reference"] = args.reference
 
-    out_tsv = stat_dir / "annotated_vs_background.tsv"
+    suffix = ("" if args.background_min_rsa is None
+              else f"_surfacebg{args.background_min_rsa:g}")
+    out_tsv = stat_dir / f"annotated_vs_background{suffix}.tsv"
     with out_tsv.open("w", newline="") as fh:
         w = csv.writer(fh, delimiter="\t", lineterminator="\n")
         w.writerow(VERDICT_HEADER)
         for v in verdicts:
             w.writerow(["" if v[c] is None else v[c] for c in VERDICT_HEADER])
-    (stat_dir / "annotated_vs_background.json").write_text(
+    (stat_dir / f"annotated_vs_background{suffix}.json").write_text(
         json.dumps(stats, indent=2))
 
-    figs = draw_annotated_bins(records, fig_dir)
-    figs += draw_annotated_distribution(stats, fig_dir)
+    figs = draw_annotated_bins(records, fig_dir,
+                               stem=f"annotated_bins{suffix}")
+    figs += draw_annotated_distribution(
+        stats, fig_dir, stem=f"annotated_distribution{suffix}")
 
     print("statistics")
     ann = stats["by_seed_class"].get(SEED_CLASS_ANNOTATED)
@@ -532,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
           f"(SD {stats['sd_of_per_structure_fractions']}, "
           f"n={stats['n_structures_with_a_verdict']} structures)")
     print(f"\n  {out_tsv}")
-    print(f"  {stat_dir / 'annotated_vs_background.json'}")
+    print(f"  {stat_dir / f'annotated_vs_background{suffix}.json'}")
     print("figures")
     for f in figs:
         print(f"  {fig_dir / f}")

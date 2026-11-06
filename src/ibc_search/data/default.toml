@@ -208,6 +208,30 @@ max_workers_cap = 8             # unit: count      | provenance: this impl | sta
 # are deliberately UNEQUAL -- weight by class size rather than pooling.
 min_background_balls = 5        # unit: balls | provenance: this impl | status: proposed
 
+# Where the background balls are allowed to sit.
+#
+# "protein" (default): a fair sample of the WHOLE protein, stratified by
+#   burial below. Asks "do the annotated sites look unlike this protein".
+# "surface": only residues with RSA >= background_rsa_threshold may be
+#   chosen. Asks "do the annotated sites look unlike the rest of the
+#   SURFACE".
+#
+# Use "surface" whenever the annotation is intrinsically a surface feature --
+# a protein-protein interface, an antibody epitope. MEASURED on the completed
+# runs, "protein" puts the two classes at opposite ends of the exposure scale
+# wherever the annotation is extreme: mean seed RSA 0.094 annotated against
+# 0.581 background for the curated zinc fingers, 0.132 against 0.420 for the
+# reviewed enzymes. A difference between classes then confounds "is
+# annotated" with "is buried", which is not a question anyone asked.
+#
+# "surface" equalises the POOL, not the distribution: annotated residues may
+# still be more exposed on average than a random surface residue. The
+# realised mean RSA of both classes is recorded per run so that residual is
+# visible. It also cannot invent surface -- a mostly-buried protein under-
+# delivers, and the shortfall is warned about rather than filled from the
+# interior, since a silent fallback would defeat the point of asking.
+background_mode = "protein"     # unit: enum | provenance: this impl | status: proposed
+
 # Split the background between buried and exposed candidates, in proportion to
 # the protein's own composition, instead of taking whatever farthest-point
 # sampling returns.

@@ -44,7 +44,7 @@ ID_COLUMN = "pdb_id"
 
 def _run_one(task: tuple) -> tuple[str, bool, str]:
     (inst, structure, out_dir, radius, log_path, top, extra, method,
-     seed_residues, seed_rounds, min_idf) = task
+     seed_residues, seed_rounds, min_idf, background_mode) = task
     env = dict(os.environ, PYTHONPATH=str(REPO / "src"))
     with open(log_path, "w") as log:
         scan = subprocess.run(
@@ -57,7 +57,9 @@ def _run_one(task: tuple) -> tuple[str, bool, str]:
             # --seed-rounds belongs to dumb-search only: few-balls-search
             # has no expansion rounds and would reject the flag.
             + (["--seed-rounds", str(seed_rounds)]
-               if seed_rounds and method == "dumb-search" else []),
+               if seed_rounds and method == "dumb-search" else [])
+            + (["--background-mode", background_mode]
+               if background_mode and method == "few-balls-search" else []),
             stdout=log, stderr=subprocess.STDOUT, cwd=str(REPO), env=env,
         )
         if scan.returncode != 0:
@@ -99,6 +101,13 @@ def main(argv: list[str] | None = None) -> int:
                          "spatially dispersed background set on the same "
                          "structure, which needs --seed-residues and emits "
                          "far FEWER queries than either [scan]")
+    ap.add_argument("--background-mode", choices=("protein", "surface"),
+                    default=None,
+                    help="few-balls-search only: `surface` restricts the "
+                         "background balls to solvent-exposed residues, "
+                         "which is what a surface annotation (interface, "
+                         "epitope) needs so the control does not differ in "
+                         "burial as well as in being annotated")
     ap.add_argument("--seed-rounds", type=int, default=None, metavar="N",
                     help="rounds of seeding with --seed-residues; 2 also "
                          "seeds every residue inside a round-1 ball")
@@ -201,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
         tasks.append((inst, structure, str(out_dir), args.radius,
                       str(args.run_dir / f"{inst}.log"), args.top,
                       tuple(search_args), args.method, args.seed_residues,
-                      args.seed_rounds, args.min_idf))
+                      args.seed_rounds, args.min_idf,
+                      args.background_mode))
 
     if skipped:
         print(f"{skipped} members already searched, skipped (--force re-runs)")
