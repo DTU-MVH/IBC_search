@@ -465,6 +465,65 @@ class, so a background ball may contain annotated residues and vice versa.
 Nothing is deduplicated. The classes differ in where their centres are, and
 in nothing else.
 
+## 3f. Within-structure annotated-vs-background verdict
+
+**A-3f.1 The verdict is a WITHIN-STRUCTURE comparison.** For each annotated
+residue, `scripts/annotated_vs_background.py` compares its own ball's
+distinct-site count against the counts of the background balls of the SAME
+structure at the SAME radius. Status: **proposed**. Across-run comparison was
+measured to be dominated by fold, deposition and -- largest of all -- motif
+count per residue; within one structure none of those differ, which is the
+reason `few_balls_search` exists. Radii are never pooled: a 5.5 A count and
+an 8 A count are different scales.
+
+**A-3f.2 The reference point is the background MEDIAN and the test is
+STRICTLY greater.** Status: **proposed**. The median because a background set
+may be as small as the five-ball floor, where one unusual ball would move a
+mean substantially. Strictly greater because with small integer counts ties
+are common and a tie is not evidence of being better; the rule is stated
+rather than left to rounding. `percentile_within_background` is reported
+beside the bit so a near miss is distinguishable from a clear loss.
+
+**A-3f.3 A structure with no background balls yields a BLANK verdict, not a
+0.** Status: **decided**. An unanswerable comparison is not a failed one, and
+scoring it 0 would silently push the reported rate down in proportion to how
+many structures lacked a control. Blank rows are excluded from the rate and
+counted separately.
+
+**A-3f.4 Both a pooled rate and a per-structure mean are reported.**
+Status: **decided**. The pooled rate treats each annotated residue as one
+observation and is dominated by heavily annotated structures; the mean of
+per-structure fractions treats each structure as one. They answer different
+questions and neither is given alone.
+
+**A-3f.5 The score is censored by `--top`, so the MEANS are lower bounds
+while the verdict is not.** Status: **measured limitation**. On the
+100-structure zincfinger run against afdb_swissprot at `--top 700`, 53% of
+annotated balls returned exactly 700 distinct sites, i.e. the cap. A mean
+computed over a censored distribution understates the true value, so the
+annotated-class mean must be read as a floor. The VERDICT is largely immune:
+a capped annotated ball still exceeds a background median far below the cap,
+and the bit only becomes unreliable where both classes saturate, which this
+run's background (mean ~140) does not.
+
+**A-3f.6 FoldDisco's own `--score` is NOT an IDF floor on this build, so the
+floor is applied at the join.** Status: **measured**. Against
+afdb_swissprot, where per-hit `idf` ran 3.6 to 888 with a median of 43.7,
+`--score 0.5` kept every row while `--score 1` and above kept NONE -- so the
+flag works on a different, normalised scale and `--score 50` silently empties
+the output rather than filtering at 50. `folddisco_search.sh --min-idf`
+therefore filters FoldDisco's `idf` column itself, during the join, and keeps
+the dropped rows in a `.lowidf.tsv` side file so the floor is auditable and a
+different floor can be applied without re-searching. Because `--top` also
+ranks by IDF, a floor applied here defines which of the retained hits count,
+not which were retrieved.
+
+**A-3f.7 An IDF floor must be chosen per index.** Status: **measured**. IDF
+measures rarity over the reference set's own contents, so it does not
+transfer: median per-hit IDF is ~478-787 against whole-PDB and ~43.7 against
+afdb_swissprot. A floor of 50 removes about 1% of PDB hits and about 56% of
+afdb_swissprot hits. The value is recorded per run and no default is set.
+
 ## 3b. FoldDisco handoff
 
 **A-3b.1 Query token grammar** is `<single-char chain><non-negative int>`.

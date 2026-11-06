@@ -112,6 +112,8 @@ def binned_point_plot(
     trend: Sequence[float] | None = None,
     trend_label: str | None = None,
     summary_ink: str = "summary",
+    highlight: Sequence[Sequence[Sequence[bool]]] | None = None,
+    highlight_label: str = "",
 ) -> Path:
     """Draw one panel per group, one bin per structure within it.
 
@@ -129,6 +131,15 @@ def binned_point_plot(
     as its spread bar -- black on the light surface, white on the dark one.
     "Black" cannot be literal in both: on the dark surface a black line is
     invisible, so the ink is the theme's, and the caption says which.
+
+    ``highlight`` optionally marks a SUBSET of each bin's points to draw in
+    the summary ink (red) on top of the rest, shaped like ``groups`` -- one
+    boolean per value. It exists so a figure can show where a labelled class
+    sits inside its own structure's distribution. Highlighted points bypass
+    the ``max_points`` subsample: they are the reason the figure is being
+    drawn, so losing them to a legibility cap would defeat it. The summary
+    bars are unaffected and still describe the FULL bin, highlighted and not
+    together, so the red marks can be read against the whole.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -163,12 +174,27 @@ def binned_point_plot(
             ax.axhline(reference, color=palette["text_secondary"],
                        linewidth=1.0, linestyle=(0, (4, 3)), alpha=0.8, zorder=1)
 
+        group_hl = None
+        if highlight is not None:
+            gi = [g for g, _ in groups].index(group_name)
+            group_hl = highlight[gi]
+
         for i, (bin_name, values) in enumerate(bins):
             vals = np.asarray([v for v in values], dtype=float)
             if vals.size == 0:
                 continue
-            shown = vals if vals.size <= max_points else rng.choice(
-                vals, max_points, replace=False
+            flags = None
+            if group_hl is not None and i < len(group_hl):
+                flags = np.asarray(group_hl[i], dtype=bool)
+                if flags.size != vals.size:
+                    raise ValueError(
+                        f"highlight for bin {bin_name!r} has {flags.size} "
+                        f"flags for {vals.size} values")
+            # Subsample only the UNhighlighted points: the highlighted ones
+            # are the subject of the figure and are always all drawn.
+            base = vals if flags is None else vals[~flags]
+            shown = base if base.size <= max_points else rng.choice(
+                base, max_points, replace=False
             )
             # A bin holding a handful of values is a set of observations, not
             # a distribution: draw them as individual marks and skip the
@@ -183,6 +209,14 @@ def binned_point_plot(
                        alpha=0.95 if sparse else 0.30,
                        linewidths=0, zorder=4 if sparse else 2,
                        rasterized=not sparse)
+            if flags is not None and flags.any():
+                hv = vals[flags]
+                hx = i + rng.uniform(-0.17, 0.17, size=hv.size)
+                ax.scatter(hx, hv, s=18, color=palette["summary"],
+                           alpha=0.95, linewidths=0, zorder=5,
+                           label=(highlight_label
+                                  if (highlight_label and i == 0
+                                      and ax is axes[0]) else None))
             if sparse:
                 continue
 

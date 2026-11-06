@@ -44,7 +44,7 @@ ID_COLUMN = "pdb_id"
 
 def _run_one(task: tuple) -> tuple[str, bool, str]:
     (inst, structure, out_dir, radius, log_path, top, extra, method,
-     seed_residues, seed_rounds) = task
+     seed_residues, seed_rounds, min_idf) = task
     env = dict(os.environ, PYTHONPATH=str(REPO / "src"))
     with open(log_path, "w") as log:
         scan = subprocess.run(
@@ -66,6 +66,8 @@ def _run_one(task: tuple) -> tuple[str, bool, str]:
         if not queries.is_file() or not queries.stat().st_size:
             return inst, False, "scan emitted no expressible queries"
         cmd = [str(SEARCH), "search", out_dir, "--top", str(top), *extra]
+        if min_idf is not None:
+            cmd += ["--min-idf", str(min_idf)]
         search = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
                                 cwd=str(REPO))
         if search.returncode != 0:
@@ -104,6 +106,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="dumb-search only: place balls ONLY on the residues "
                          "this file names. Filtered per structure by its "
                          "pdb_id/instance column")
+    ap.add_argument("--min-idf", type=float, default=None, metavar="X",
+                    help="a hit counts only if its idf is >= X. Applied on "
+                         "FoldDisco's idf column at the join, because this "
+                         "build's own --score works on a different, "
+                         "normalised scale and silently empties the output. "
+                         "IDF is index-dependent, so choose per index: "
+                         "median per-hit idf is ~478-787 on whole-PDB and "
+                         "~43.7 on afdb_swissprot")
     ap.add_argument("--top", type=int, default=700,
                     help="FoldDisco --top, structures kept per query. 40 was "
                          "measured to censor 72-98%% of motifs, which makes "
@@ -191,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         tasks.append((inst, structure, str(out_dir), args.radius,
                       str(args.run_dir / f"{inst}.log"), args.top,
                       tuple(search_args), args.method, args.seed_residues,
-                      args.seed_rounds))
+                      args.seed_rounds, args.min_idf))
 
     if skipped:
         print(f"{skipped} members already searched, skipped (--force re-runs)")

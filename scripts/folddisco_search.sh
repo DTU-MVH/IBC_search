@@ -110,6 +110,28 @@ TOP="${IBC_FOLDDISCO_TOP:-700}"
 # was introduced used FoldDisco's 50000.
 NUM_RESIDUE="${IBC_FOLDDISCO_NUM_RESIDUE:-2000}"
 
+# Minimum per-hit IDF for a hit to COUNT. Empty means no floor.
+#
+# Applied by `join`, on the `idf` column of FoldDisco's own output, so the
+# semantics are exactly "a hit row with idf < MIN_IDF is not a hit". Dropped
+# rows are counted and kept in a side file, never silently discarded.
+#
+# NOT FoldDisco's own `--score`. That flag was MEASURED on this build to work
+# on a different, normalised scale: against the afdb_swissprot index, where
+# per-hit idf ran 3.6 to 888 with a median of 43.7, `--score 0.5` kept every
+# row and `--score 1` and above kept NONE. So `--score 50` does not mean
+# "idf >= 50"; it silently empties the output. Hence this filter is ours.
+#
+# IDF is index-dependent -- it measures rarity over the reference set's own
+# contents -- so a floor calibrated against one index means something else
+# against another. Measured medians per hit row: ~478-787 on whole-PDB,
+# ~43.7 on afdb_swissprot. A floor must be chosen per index, not inherited.
+#
+# What it cannot undo: --top also ranks by IDF and keeps only the N highest,
+# so a floor applied afterwards is nested inside that cap. It defines which
+# of the retained hits count, not which were retrieved.
+MIN_IDF="${IBC_FOLDDISCO_MIN_IDF:-}"
+
 # Per-match columns. `query_residues` is the reliable side of the round trip
 # (it echoes exactly what was sent); `matching_residues` is NOT reliably
 # positionally aligned to it -- see docs/FOLDDISCO_CONTRACT.md.
@@ -128,6 +150,7 @@ usage:
   folddisco_search.sh search <results_dir> [options] [-- <extra folddisco args>]
   folddisco_search.sh search-ensemble <ensemble_dir> [-j N] [search options]
   folddisco_search.sh join <results_dir> [-o PATH] [--raw PATH] [--strict]
+                           [--min-idf X]
 
 search options:
   -i, --index PATH       index table to search   [$IBC_FOLDDISCO_INDEX]
@@ -136,6 +159,7 @@ search options:
       --format-output S  comma-separated per-match columns
       --top N            keep the top N structures per query by IDF [700]
       --no-top           no cap -- see the warning below
+      --min-idf X        drop hit rows with idf < X at the join [none]
       --num-residue N    skip candidates over N residues [2000 -- see below]
       --no-num-residue   no candidate size limit (FoldDisco's own 50000)
       --rmsd X           maximum RMSD cutoff
@@ -303,6 +327,7 @@ PY
 
 do_join() {
     local index_file="$1" raw="$2" output="$3" strict="${4:-0}" exclude_ids="${5:-}"
+    local min_idf="${6:-}"
     local torn_count_file
     torn_count_file="$(mktemp -t folddisco_torn)"
 
@@ -317,7 +342,9 @@ do_join() {
         -v tornflag="${torn_count_file}" \
         -v idxfile="${index_file}" \
         -v exclude_ids="${exclude_ids}" \
-        -v selfhits="${output%.tsv}.selfhits.tsv" '
+        -v selfhits="${output%.tsv}.selfhits.tsv" \
+        -v min_idf="${min_idf}" \
+        -v lowidf="${output%.tsv}.lowidf.tsv" '
         # pass 1: query string -> patch identity, from the scan index file
         NR == FNR {
             if (FNR > 1) {
@@ -342,6 +369,13 @@ do_join() {
             for (i = 1; i <= NF; i++) {
                 if ($i == "query_residues") qcol = i
                 if ($i == "tid") tidcol = i
+                if ($i == "idf") idfcol = i
+            }
+            if (min_idf != "" && !idfcol) {
+                print "error: --min-idf needs an idf column in " \
+                      "--format-output; refusing to report an unfiltered " \
+                      "file as a filtered one" > "/dev/stderr"
+                exit 3
             }
             n_excl = split(exclude_ids, excl, " ")
             if (n_excl && !tidcol) {
@@ -380,6 +414,14 @@ do_join() {
                 }
             }
         }
+        # The IDF floor. A row below it is not a hit, by definition of the
+        # run; it is kept in a side file so the floor can be audited and so a
+        # different floor can be applied later without re-searching.
+        min_idf != "" && $idfcol + 0 < min_idf + 0 {
+            n_lowidf++
+            print > lowidf
+            next
+        }
         {
             k = $qcol
             if (k in patch) {
@@ -410,6 +452,9 @@ do_join() {
             if (n_orphan)
                 printf "WARNING: %d hit rows carry a query string absent from %s\n", \
                        n_orphan, idxfile > "/dev/stderr"
+            if (n_lowidf)
+                printf "dropped %d hit rows with idf < %s; kept in %s\n", \
+                       n_lowidf, min_idf, lowidf > "/dev/stderr"
             if (n_self)
                 printf "excluded %d self-hit rows (%s); kept in %s\n", \
                        n_self, exclude_ids, selfhits > "/dev/stderr"
@@ -440,6 +485,7 @@ cmd_join() {
             -o|--output) output="$2"; shift 2 ;;
             --raw)       raw="$2"; shift 2 ;;
             --strict)    strict=1; shift ;;
+            --min-idf)   MIN_IDF="$2"; shift 2 ;;
             --no-exclude-self) exclude_self=0; shift ;;
             --exclude-id) extra_ids="${extra_ids} $(printf %s "$2" | tr "A-Z" "a-z")"; shift 2 ;;
             -h|--help)   usage; exit 0 ;;
@@ -468,7 +514,7 @@ cmd_join() {
         fi
     fi
     exclude_ids="$(printf %s "${exclude_ids}${extra_ids}" | tr -s " ")"
-    do_join "${index_file}" "${raw}" "${output}" "${strict}" "${exclude_ids}"
+    do_join "${index_file}" "${raw}" "${output}" "${strict}" "${exclude_ids}" "${MIN_IDF}"
     local n_hits
     n_hits="$(( $(grep -c '' "${output}") - 1 ))"
     note "wrote ${n_hits} hit rows to ${output}"
@@ -587,6 +633,7 @@ cmd_search() {
             --num-residue)      NUM_RESIDUE="$2"; shift 2 ;;
             --no-num-residue)   NUM_RESIDUE=""; shift ;;
             --rmsd)             passthrough+=(--rmsd "$2"); shift 2 ;;
+            --min-idf)          MIN_IDF="$2"; shift 2 ;;
             --keep-raw)         keep_raw=1; shift ;;
             --no-exclude-self)  exclude_self=0; shift ;;
             --exclude-id)       extra_ids="${extra_ids} $(printf %s "$2" | tr "A-Z" "a-z")"; shift 2 ;;
@@ -664,6 +711,11 @@ cmd_search() {
         note "  cand    no candidate size limit: FoldDisco's own 50000 applies"
     fi
 
+    if [[ -n "${MIN_IDF}" ]]; then
+        note "  idf     a hit counts only with idf >= ${MIN_IDF} (applied at the"
+        note "          join; see the note on FoldDisco's own --score)"
+    fi
+
     "${FOLDDISCO}" query \
         -i "${INDEX}" \
         -q "${query_file}" \
@@ -684,7 +736,7 @@ cmd_search() {
         fi
     fi
     exclude_ids="$(printf %s "${exclude_ids}${extra_ids}" | tr -s " ")"
-    do_join "${index_file}" "${raw}" "${output}" "${strict}" "${exclude_ids}"
+    do_join "${index_file}" "${raw}" "${output}" "${strict}" "${exclude_ids}" "${MIN_IDF}"
 
     local n_hits
     n_hits="$(( $(grep -c '' "${output}") - 1 ))"

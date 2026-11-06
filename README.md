@@ -217,6 +217,60 @@ smaller set.
 A `few_balls_search` motif is a ball of residues. It is not a surface patch,
 not an epitope, and establishes nothing about antigenicity.
 
+### Is an annotated residue better than its own structure's background?
+
+```bash
+.venv/bin/python scripts/annotated_vs_background.py \
+  results/zincfingers_fewballs_swissprot_r5.5
+```
+
+Reads a `few_balls_search` run and scores every annotated residue **1** or
+**0**: 1 when its own ball matched more distinct sites than the median of the
+background balls on the *same structure at the same radius*, 0 when it did
+not, and blank where that structure had no background ball to compare
+against. Blank is not 0 — an unanswerable comparison is not a failed one.
+
+The test is strictly greater, since with small integer counts a tie is not
+evidence of being better, and `percentile_within_background` is reported
+beside the bit so a near miss can be told from a clear loss.
+
+Writes to the run's standard layout:
+
+| output | what it is |
+|---|---|
+| `01_statistics/annotated_vs_background.tsv` | one row per annotated residue, with its count, its structure's background median, the percentile and the 1/0 |
+| `01_statistics/annotated_vs_background.json` | mean, SD, median, IQR and distinct counts per category, per structure and pooled |
+| `00_figures/annotated_bins.png` | the binned dot map, one bin per structure, **annotated residues in red** against their own background in blue |
+| `00_figures/annotated_distribution.png` | mean, ±1 SD and distinct counts per category — by seed class, and annotated residues split by verdict |
+
+Two rates are reported and neither is given alone: the **pooled** fraction
+treats each annotated residue as one observation and is dominated by heavily
+annotated structures, while the **mean of per-structure fractions** treats
+each structure as one.
+
+A caution that applies to the means but not the verdict: the count is
+censored by `--top`. Where a large share of annotated balls return exactly
+the cap, the annotated mean is a lower bound. The verdict survives that — a
+capped ball still beats a background median well below the cap — and only
+becomes unreliable if both classes saturate.
+
+### Filtering hits by IDF
+
+`folddisco_search.sh --min-idf X` (and `run_panel.py --min-idf X`) drops hit
+rows whose `idf` is below X, keeping them in a `.lowidf.tsv` side file so the
+floor is auditable and a different one can be applied without re-searching.
+
+This is **not** FoldDisco's own `--score`. Measured on the installed build
+against `afdb_swissprot`, where per-hit `idf` ran 3.6 to 888 with a median of
+43.7, `--score 0.5` kept every row and `--score 1` and above kept none — it
+works on a different, normalised scale, so `--score 50` silently empties the
+output instead of filtering at 50.
+
+IDF is index-dependent, so a floor must be chosen per index rather than
+inherited. Median per-hit IDF is roughly 478–787 against whole-PDB and 43.7
+against `afdb_swissprot`, so a floor of 50 removes about 1% of PDB hits and
+about 56% of Swiss-Prot hits.
+
 ### Inspect configuration and the FoldDisco contract
 
 ```bash
