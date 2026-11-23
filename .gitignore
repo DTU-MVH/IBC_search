@@ -21,3 +21,8 @@ ensembles/
 # scripts/build_investigation_db.py); untracked because they are bulk
 # third-party data, not source.
 investigation_databases/
+
+# A stray, mis-named copy of the investigation data (singular). Same
+# category as investigation_databases/ above: 136 MB of downloaded
+# third-party structures, regenerable, not source.
+investigation_database/
