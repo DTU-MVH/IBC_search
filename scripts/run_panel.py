@@ -44,7 +44,8 @@ ID_COLUMN = "pdb_id"
 
 def _run_one(task: tuple) -> tuple[str, bool, str]:
     (inst, structure, out_dir, radius, log_path, top, extra, method,
-     seed_residues, seed_rounds, min_idf, background_mode) = task
+     seed_residues, seed_rounds, min_idf, background_mode,
+     min_background, background_rsa) = task
     env = dict(os.environ, PYTHONPATH=str(REPO / "src"))
     with open(log_path, "w") as log:
         scan = subprocess.run(
@@ -59,7 +60,13 @@ def _run_one(task: tuple) -> tuple[str, bool, str]:
             + (["--seed-rounds", str(seed_rounds)]
                if seed_rounds and method == "dumb-search" else [])
             + (["--background-mode", background_mode]
-               if background_mode and method == "few-balls-search" else []),
+               if background_mode and method == "few-balls-search" else [])
+            + (["--min-background", str(min_background)]
+               if min_background is not None
+               and method == "few-balls-search" else [])
+            + (["--background-rsa", str(background_rsa)]
+               if background_rsa is not None
+               and method == "few-balls-search" else []),
             stdout=log, stderr=subprocess.STDOUT, cwd=str(REPO), env=env,
         )
         if scan.returncode != 0:
@@ -101,6 +108,20 @@ def main(argv: list[str] | None = None) -> int:
                          "spatially dispersed background set on the same "
                          "structure, which needs --seed-residues and emits "
                          "far FEWER queries than either [scan]")
+    ap.add_argument("--min-background", type=int, default=None, metavar="N",
+                    help="few-balls-search only: floor on the number of "
+                         "background balls per structure. The default of 5 "
+                         "is a statistical minimum, not a good control: a "
+                         "structure with 5 background balls cannot supply "
+                         "an exposure-matched comparison, which is what "
+                         "left the reviewed-enzyme matched null resting on "
+                         "4 observations. Raise it for sparsely annotated "
+                         "sets")
+    ap.add_argument("--background-rsa", type=float, default=None,
+                    metavar="FRAC",
+                    help="few-balls-search only: the buried/exposed boundary "
+                         "used by --background-mode surface and by the "
+                         "burial stratification")
     ap.add_argument("--background-mode", choices=("protein", "surface"),
                     default=None,
                     help="few-balls-search only: `surface` restricts the "
@@ -211,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
                       str(args.run_dir / f"{inst}.log"), args.top,
                       tuple(search_args), args.method, args.seed_residues,
                       args.seed_rounds, args.min_idf,
-                      args.background_mode))
+                      args.background_mode, args.min_background,
+                      args.background_rsa))
 
     if skipped:
         print(f"{skipped} members already searched, skipped (--force re-runs)")
